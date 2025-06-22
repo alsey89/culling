@@ -22,19 +22,19 @@ struct CullHistoryRecord {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Config {
-    hash_threshold: u32,
-    default_selection_strategy: SelectionStrategy,
-    excluded_dirs: Vec<String>,
     auto_confirm: bool,
+    selection_strategy: SelectionStrategy,
+    excluded_dirs: Vec<String>,
+    duplicates_hash_threshold: u32,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            hash_threshold: 15,
-            default_selection_strategy: SelectionStrategy::Oldest,
-            excluded_dirs: vec!["duplicates".to_string()],
             auto_confirm: false,
+            selection_strategy: SelectionStrategy::Oldest,
+            excluded_dirs: vec!["duplicates".to_string()],
+            duplicates_hash_threshold: 15,
         }
     }
 }
@@ -194,13 +194,19 @@ fn handle_config_command(command: ConfigCmd) -> Result<()> {
         ConfigCmd::Show => {
             let config = load_config(&config_path).unwrap_or_default();
             println!("Current configuration:");
-            println!("  Hash threshold: {}", config.hash_threshold);
+            println!("  [General] Auto confirm: {}", config.auto_confirm);
             println!(
-                "  Selection strategy: {:?}",
-                config.default_selection_strategy
+                "  [General] Selection strategy: {:?}",
+                config.selection_strategy
             );
-            println!("  Auto confirm: {}", config.auto_confirm);
-            println!("  Excluded directories: {:?}", config.excluded_dirs);
+            println!(
+                "  [General] Excluded directories: {:?}",
+                config.excluded_dirs
+            );
+            println!(
+                "  [Duplicates] Hash threshold: {}",
+                config.duplicates_hash_threshold
+            );
         }
         ConfigCmd::Set {
             threshold,
@@ -213,10 +219,10 @@ fn handle_config_command(command: ConfigCmd) -> Result<()> {
                 if t > 64 {
                     anyhow::bail!("Threshold must be between 0 and 64");
                 }
-                config.hash_threshold = t;
+                config.duplicates_hash_threshold = t;
             }
             if let Some(s) = strategy {
-                config.default_selection_strategy = s;
+                config.selection_strategy = s;
             }
             if let Some(ac) = auto_confirm {
                 config.auto_confirm = ac;
@@ -242,7 +248,7 @@ fn handle_duplicates_command(command: DupeCMD) -> Result<()> {
             validate_directory(&path)?;
             println!("▶ Scanning for duplicates in: {}", path.display());
 
-            let threshold = threshold.unwrap_or(config.hash_threshold);
+            let threshold = threshold.unwrap_or(config.duplicates_hash_threshold);
             let groups = find_duplicates(&path, threshold)?;
             if groups.is_empty() {
                 println!("No duplicates found.");
@@ -278,14 +284,14 @@ fn handle_duplicates_command(command: DupeCMD) -> Result<()> {
             }
 
             println!("▶ Culling duplicates in: {}", path.display());
-            let threshold = threshold.unwrap_or(config.hash_threshold);
+            let threshold = threshold.unwrap_or(config.duplicates_hash_threshold);
             let mut groups = find_duplicates(&path, threshold)?;
             if groups.is_empty() {
                 println!("No duplicates found.");
                 return Ok(());
             }
 
-            let selection_strategy = strategy.unwrap_or(config.default_selection_strategy);
+            let selection_strategy = strategy.unwrap_or(config.selection_strategy);
             for group in &mut groups {
                 sort_group_by_strategy(group, &selection_strategy);
             }
@@ -369,14 +375,14 @@ fn handle_duplicates_command(command: DupeCMD) -> Result<()> {
             }
 
             println!("▶ Deleting duplicates in: {}", path.display());
-            let threshold = threshold.unwrap_or(config.hash_threshold);
+            let threshold = threshold.unwrap_or(config.duplicates_hash_threshold);
             let mut groups = find_duplicates(&path, threshold)?;
             if groups.is_empty() {
                 println!("No duplicates found.");
                 return Ok(());
             }
 
-            let selection_strategy = strategy.unwrap_or(config.default_selection_strategy);
+            let selection_strategy = strategy.unwrap_or(config.selection_strategy);
             for group in &mut groups {
                 sort_group_by_strategy(group, &selection_strategy);
             }
@@ -657,11 +663,13 @@ fn find_duplicates(dir: &Path, threshold: u32) -> Result<Vec<Vec<PathBuf>>> {
             .collect::<Result<_>>()
     })?;
 
-    pb.finish_with_message("Hashing complete");
-
-    println!("▶ Grouping similar hashes with threshold {}", threshold);
+    // pb.finish();
+    pb.finish_and_clear();
+    println!("▶ Hashing complete");
 
     // Group similar hashes using Hamming distance
+    println!("▶ Grouping similar hashes with threshold {}", threshold);
+
     let mut groups: Vec<Vec<PathBuf>> = Vec::new();
     let mut used = vec![false; hashes.len()];
 
