@@ -46,7 +46,7 @@ cargo install cullrs
 ### From source
 
 ```sh
-git clone https://github.com/yourorg/cullrs.git
+git clone https://github.com/alsey89/culling.git
 cd cullrs
 cargo build --release
 # Optionally copy the binary into your $PATH:
