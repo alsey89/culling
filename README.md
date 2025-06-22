@@ -1,128 +1,195 @@
-# Cullrs: Photo Culler CLI
+# cullrs
 
-Cullrs is a command-line tool for scanning, analyzing, and culling photos in bulk.
+`cullrs` is a Rust-based CLI tool for scanning, detecting, and culling undesirable photos (currently supports duplicates with future support for other analysis passes). It provides a clear workflow for finding duplicates, previewing culls, executing moves or deletions, and managing a unified history+restore interface.
 
-## Features
+---
 
-- **Scan** directories for image files (jpg, jpeg, png, gif, bmp, tiff).
-- **Analyze** images for duplicates (mean-hash). future: face detection and focus measurement.
-- **Cull** images by moving or deleting duplicates with dry-run mode. future: with face, focus, exposure scoring
-- **History** tracking of cull actions in a JSONL log.
-- **Restore** moved files from history records.
+## 🚀 Features
 
-## Installation
+- **Scan for duplicates**: Identify groups of files with identical image hashes.
+- **Cull (move)**: Move duplicate files into a dedicated `duplicates/` folder (with dry-run support).
+- **Delete**: Permanently remove duplicate files.
+- **History**: Record every cull or delete action in a JSONL log (`.history.jsonl`).
+- **Unified history & restore**: View history and restore moved files via subcommands under `history`.
 
-1. Ensure you have Rust and Cargo installed ([https://rustup.rs](https://rustup.rs)).
-2. Clone this repository:
+### Future Extensions
 
-   ```sh
-   git clone https://github.com/alsey89/culling.git
-   cd culling
-   ```
+- Additional analysis passes (e.g., focus/blurriness, face detection, exposure checks).
+- GUI or TUI front-end (Tauri, ratatui).
 
-3. Build and install:
+---
 
-   ```sh
-   cargo install --path .
-   ```
+## ⚙️ Prerequisites
 
-4. Confirm installation:
+- Rust toolchain (1.70+)
+- `cargo` (comes with Rust)
 
-   ```sh
-   cullrs --version
-   ```
+Optional libraries (pulled via Cargo.toml):
 
-## Usage
+- `anyhow`, `clap`, `chrono`
+- `image`, `image-hasher`
+- `walkdir`, `indicatif`, `rayon`
+- `serde`, `serde_json`
 
-Run `cullrs <COMMAND> --help` for details on any command.
+---
 
-### Scan
+## 📥 Installation
 
-Scan a directory and list all supported image files:
+You can install `cullrs` locally or globally:
 
-```sh
-cullrs scan -p /path/to/photos
-```
-
-### Analyze
-
-Perform analysis passes on the image set. At least one analysis flag is required.
-
-- **--duplicates**: find duplicate groups
-- **--faces**: detect faces (not yet implemented)
-- **--focus**: measure focus (not yet implemented)
-
-Example:
+### From crates.io (future)
 
 ```sh
-cullrs analyze -p /path/to/photos --duplicates
+cargo install cullrs
 ```
 
-### Cull
-
-Cull images by a single chosen method (duplicates or focus). Supports dry-run and deletion.
-
-#### Duplicate culling
+### From source
 
 ```sh
-cullrs cull -p /path/to/photos duplicates --dry
-# or to actually move duplicates:
-# cullrs cull -p /path/to/photos duplicates
+git clone https://github.com/yourorg/cullrs.git
+cd cullrs
+cargo build --release
+# Optionally copy the binary into your $PATH:
+cp target/release/cullrs ~/.cargo/bin/
 ```
 
-Options:
+Run `cullrs --version` to verify installation.
 
-- `--dry`: show actions without changing files
-- `--delete`: permanently delete instead of moving
-- `--target-dir <DIR>`: custom destination directory for moved files
+---
 
-#### Focus culling
+## 📝 Usage Overview
+
+```text
+USAGE:
+  cullrs <COMMAND> [OPTIONS]
+
+COMMANDS:
+  duplicates   Duplicate workflows (scan, cull, delete)
+  history      Manage cull history (list, restore)
+  help         Print this message or the help of the given subcommand(s)
+```
+
+---
+
+## 📂 `duplicates` Subcommands
+
+All duplicate workflows are grouped under:
 
 ```sh
-cullrs cull -p /path/to/photos focus --min-focus 150.0
+cullrs duplicates <SUBCOMMAND> [OPTIONS] <DIR>
 ```
 
-Options same as above.
+### 1. Scan for duplicate groups
 
-### History
-
-Display the history of all cull actions:
+List all groups of images that share the same hash (no filesystem changes).
 
 ```sh
-cullrs history -p /path/to/photos
+cullrs duplicates scan --path ./photos/
 ```
 
-### Restore
+**Output example**:
 
-Restore moved files from history. By default, restores the most recent record.
+```
+▶ Scanning for duplicates in: photos/
+Found 2 duplicate group(s):
+ Group 1:
+   ▶ photos/img001.jpg
+   ▶ photos/img001_copy.jpg
+ Group 2:
+   ▶ photos/vacation1.png
+   ▶ photos/vacation1_edited.png
+```
+
+### 2. Cull (move) duplicates
+
+Move all but the oldest file in each group into a `duplicates/` folder.
+
+```sh
+# Preview only (dry run):
+cullrs duplicates cull --path ./photos/ --dry-run
+
+# Actually move duplicates:
+cullrs duplicates cull --path ./photos/
+```
+
+- **`--dry-run`**: Show what would be moved without touching files.
+- **`--target-dir <DIR>`**: Override default `./photos/duplicates/` output directory.
+
+### 3. Delete duplicates
+
+Permanently remove all but the oldest file in each duplicate group.
+
+```sh
+cullrs duplicates delete --path ./photos/
+```
+
+---
+
+## 📜 `history` Subcommands
+
+The history command now encapsulates both listing and restoring from the `.history.jsonl` log:
+
+```sh
+cullrs history <SUBCOMMAND> [OPTIONS] --path <DIR>
+```
+
+### 1. List history records
+
+Show a chronological list of every cull or delete action.
+
+```sh
+cullrs history list --path ./photos/
+```
+
+**Output example**:
+
+```
+🗂️  Cull History:
+[0] 2025-06-22T14:30:00Z
+     kept: photos/img001.jpg
+     culled: ["photos/img001_copy.jpg"]
+     action: moved
+[1] 2025-06-22T14:32:10Z
+     kept: photos/img002.png
+     culled: ["photos/img002_copy1.png","photos/img002_copy2.png"]
+     action: deleted
+```
+
+### 2. Restore moved files
+
+Recover files that were moved (but not those deleted) from a specific record or all records at once.
 
 ```sh
 # Restore the last record:
-
-cullrs restore -p /path/to/photos
+cullrs history restore --path ./photos/
 
 # Restore a specific record index:
-
-cullrs restore -p /path/to/photos --record 2
+cullrs history restore --path ./photos/ --record 0
 
 # Restore all records:
-
-cullrs restore -p /path/to/photos --all
+cullrs history restore --path ./photos/ --all
 ```
 
-## Files & Logging
+---
 
-- Cull history is stored in `.history.jsonl` inside the target directory.
-- Each entry includes a timestamp, retained file, culled files list, and action type.
+## 🛠️ Internals & Tips
 
-## Contributing
+- **History file**: Stored at `<dir>/.history.jsonl`, one JSON record per cull group.
+- **Hash algorithm**: Uses mean-hash (`image-hasher`) for quick similarity.
+- **Parallelism**: Hashing is done in parallel (`rayon`).
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature-name`)
-3. Commit your changes (`git commit -m "Add feature"`)
-4. Push to the branch (`git push origin feature-name`)
-5. Open a pull request
+---
 
-## License
+## 🤝 Contributing
 
-MIT License © alsey89
+Contributions welcome! Please:
+
+1. Fork the repo
+2. Create a feature branch
+3. Open a PR with tests and updated docs
+
+---
+
+## 📄 License
+
+[MIT](LICENSE)
