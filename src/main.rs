@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use image::ImageReader;
 use image_hasher::{HashAlg, HasherConfig};
 use indicatif::{ProgressBar, ProgressStyle};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -105,6 +106,15 @@ enum CullAction {
         #[arg(long, default_value_t = 100.0)]
         min_focus: f64,
     },
+}
+
+/// Run `f()`, print how long it took (with `label`), and return its result.
+fn benchmark<T, F: FnOnce() -> T>(label: &str, f: F) -> T {
+    let start = Instant::now();
+    let result = f();
+    let elapsed = start.elapsed();
+    println!("⏱ {} took {:.2?}", label, elapsed);
+    result
 }
 
 fn main() -> Result<()> {
@@ -410,74 +420,62 @@ fn main() -> Result<()> {
 
 /// Recursively walk `dir`, returning a Vec of image file paths.
 fn scan_directory(dir: &Path) -> Result<Vec<PathBuf>> {
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(ProgressStyle::with_template("{spinner:.green} {msg}")?);
-    spinner.set_message("Scanning for images...");
-    spinner.enable_steady_tick(Duration::from_millis(100));
+    benchmark("scanning directory", || {
+        let spinner = ProgressBar::new_spinner();
+        spinner.set_style(ProgressStyle::with_template("{spinner:.green} {msg}")?);
+        spinner.set_message("Scanning for images...");
+        spinner.enable_steady_tick(Duration::from_millis(100));
 
-    let allowed_exts = ["jpg", "jpeg", "png", "gif", "bmp", "tiff"];
-    let mut images = Vec::new();
-    for entry in WalkDir::new(dir).into_iter().filter_map(Result::ok) {
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-                if allowed_exts.contains(&ext.to_lowercase().as_str()) {
-                    images.push(path.to_path_buf());
+        let allowed_exts = ["jpg", "jpeg", "png", "gif", "bmp", "tiff"];
+        let mut images = Vec::new();
+        for entry in WalkDir::new(dir).into_iter().filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                    if allowed_exts.contains(&ext.to_lowercase().as_str()) {
+                        images.push(path.to_path_buf());
+                    }
                 }
             }
+            spinner.tick();
         }
-        spinner.tick();
-    }
-    spinner.finish_with_message("Scan complete");
-    Ok(images)
+        spinner.finish_with_message("Scan complete");
+
+        Ok(images)
+    })
 }
 
 /// Find duplicate images by mean-hash similarity, returning groups of file paths
 fn find_duplicates(dir: &Path) -> Result<Vec<Vec<PathBuf>>> {
     let images = scan_directory(dir)?;
-    let pb = ProgressBar::new(images.len() as u64);
-    pb.set_style(ProgressStyle::with_template(
-        "{spinner:.green} Hashing images... {pos}/{len}",
-    )?);
+    println!("▶ Parallel hashing {} images…", images.len());
 
-    // start the “total” timer
-    let total_start = Instant::now();
-    // for calculating per-image average
-    let mut sum_hash_time = Duration::ZERO;
-
+    // 2. Prepare the hasher
     let hasher = HasherConfig::new().hash_alg(HashAlg::Mean).to_hasher();
+
+    // 3. Map each image → (hash, path) in parallel
+    //    We clone the PathBuf so each thread owns its own copy.
+    let key_paths: Vec<(String, PathBuf)> = benchmark("hashing all images", || {
+        images
+            .par_iter()
+            .map(|path| -> Result<(String, PathBuf)> {
+                let img = ImageReader::open(path)
+                    .with_context(|| format!("Failed to open {:?}", path))?
+                    .decode()
+                    .with_context(|| format!("Failed to decode {:?}", path))?;
+                let key = hasher.hash_image(&img).to_base64();
+                Ok((key, path.clone()))
+            })
+            .collect::<Result<Vec<_>>>()
+    })?;
+
+    // 4. Fold into a hashmap grouping by hash key
     let mut map: HashMap<String, Vec<PathBuf>> = HashMap::new();
-    for path in images {
-        // start per-image timer
-        let img_start = Instant::now();
-
-        let img = ImageReader::open(&path).with_context(|| format!("Failed to open {:?}", path))?;
-        let img = img
-            .decode()
-            .with_context(|| format!("Failed to decode {:?}", path))?;
-        let key = hasher.hash_image(&img).to_base64();
-        map.entry(key).or_default().push(path.clone());
-        pb.inc(1);
-
-        // record how long we spent hashing this one
-        sum_hash_time += img_start.elapsed();
+    for (key, path) in key_paths {
+        map.entry(key).or_default().push(path);
     }
-    pb.finish_with_message("Hashing complete");
 
-    // total elapsed wall-clock time
-    let total_elapsed = total_start.elapsed();
-    // compute average
-    let avg = if !map.is_empty() {
-        sum_hash_time / (map.values().flatten().count() as u32)
-    } else {
-        Duration::ZERO
-    };
-    println!(
-        "⏱  Total hashing time: {:.2?},  avg per image: {:.2?}",
-        total_elapsed, avg
-    );
-
-    Ok(map.into_values().filter(|g| g.len() > 1).collect())
+    Ok(map.into_values().filter(|grp| grp.len() > 1).collect())
 }
 
 /// Placeholder for focus-based culling; returns empty list until implemented.
