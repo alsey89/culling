@@ -24,7 +24,7 @@ struct CullHistoryRecord {
 
 /// Photo Culler CLI - prototype commands
 #[derive(Parser, Debug)]
-#[command(name = "darwin", version, about = "CLI for culling photos")]
+#[command(name = "cullrs", version, about = "CLI for culling photos")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -198,7 +198,7 @@ fn main() -> Result<()> {
                         .with_context(|| format!("Failed to create directory {:?}", dup_dir))?;
                 }
 
-                let history_file = path.join(".darwin_history.jsonl");
+                let history_file = path.join(".history.jsonl");
                 let mut history_out = if dry {
                     None
                 } else {
@@ -258,7 +258,7 @@ fn main() -> Result<()> {
                 } else {
                     println!(
                         "\n✅ Recorded cull history in {}",
-                        path.join(".darwin_history.jsonl").display()
+                        path.join(".history.jsonl").display()
                     );
                 }
             }
@@ -305,7 +305,7 @@ fn main() -> Result<()> {
         },
 
         Commands::History { path } => {
-            let history_file = path.join(".darwin_history.jsonl");
+            let history_file = path.join(".history.jsonl");
             let f = File::open(&history_file)
                 .with_context(|| format!("Could not open history file {:?}", history_file))?;
             let reader = BufReader::new(f);
@@ -324,7 +324,7 @@ fn main() -> Result<()> {
         }
 
         Commands::Restore { path, record, all } => {
-            let history_file = path.join(".darwin_history.jsonl");
+            let history_file = path.join(".history.jsonl");
             let f = File::open(&history_file)
                 .with_context(|| format!("Could not open history file {:?}", history_file))?;
             let reader = BufReader::new(f);
