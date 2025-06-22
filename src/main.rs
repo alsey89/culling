@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use std::time::{Duration, SystemTime};
 use walkdir::WalkDir;
 
@@ -53,7 +54,7 @@ enum Commands {
         focus: bool,
     },
 
-    /// Cull duplicates by moving or deleting them
+    /// Cull images by a single chosen method
     Cull {
         /// Directory to cull
         #[arg(short, long, value_name = "DIR")]
@@ -61,12 +62,15 @@ enum Commands {
         /// Only show what would be deleted/moved
         #[arg(long)]
         dry: bool,
-        /// Permanently delete duplicates instead of moving
+        /// Permanently delete instead of moving
         #[arg(long)]
         delete: bool,
-        /// Directory to move duplicates into (default: <path>/duplicates)
+        /// Directory to move duplicates into (default: <path>/duplicates) or blurry into (<path>/blurry)
         #[arg(long, value_name = "DIR")]
         target_dir: Option<PathBuf>,
+        /// Pick exactly one cull action
+        #[command(subcommand)]
+        action: CullAction,
     },
 
     /// Show cull history
@@ -87,6 +91,19 @@ enum Commands {
         /// Restore all records
         #[arg(long, conflicts_with = "record")]
         all: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum CullAction {
+    /// Remove duplicate groups
+    Duplicates {},
+
+    /// Remove out-of-focus (blurry) images
+    Focus {
+        /// Minimum acceptable focus score (lower = blurrier)
+        #[arg(long, default_value_t = 100.0)]
+        min_focus: f64,
     },
 }
 
@@ -153,52 +170,55 @@ fn main() -> Result<()> {
             dry,
             delete,
             target_dir,
-        } => {
-            println!("▶ Culling duplicates in: {}", path.display());
-            let mut groups = find_duplicates(&path)?;
-            if groups.is_empty() {
-                println!("No duplicates found.");
-                return Ok(());
-            }
-            for group in &mut groups {
-                group.sort_by_key(|p| get_timestamp(p));
-            }
-            let dup_dir = target_dir.unwrap_or_else(|| path.join("duplicates"));
-            if !delete && !dry {
-                fs::create_dir_all(&dup_dir)
-                    .with_context(|| format!("Failed to create directory {:?}", dup_dir))?;
-            }
-            let history_file = path.join(".darwin_history.jsonl");
-            let mut history_out = if dry {
-                None
-            } else {
-                Some(
-                    OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&history_file)
-                        .with_context(|| {
-                            format!("Failed to open history file {:?}", history_file)
-                        })?,
-                )
-            };
+            action,
+        } => match action {
+            CullAction::Duplicates {} => {
+                println!("▶ Culling duplicates in: {}", path.display());
+                let mut groups = find_duplicates(&path)?;
+                if groups.is_empty() {
+                    println!("No duplicates found.");
+                    return Ok(());
+                }
+                for group in &mut groups {
+                    group.sort_by_key(|p| get_timestamp(p));
+                }
+                let dup_dir = target_dir.unwrap_or_else(|| path.join("duplicates"));
+                if !delete && !dry {
+                    fs::create_dir_all(&dup_dir)
+                        .with_context(|| format!("Failed to create directory {:?}", dup_dir))?;
+                }
 
-            for (i, group) in groups.iter().enumerate() {
-                println!("\n✨ Group {}:", i + 1);
-                println!("   🏆 Keeping → {}", group[0].display());
-                let retained = group[0].display().to_string();
-                let mut culled_paths = Vec::new();
-                let action = if delete { "deleted" } else { "moved" }.to_string();
-                for dup in &group[1..] {
-                    culled_paths.push(dup.display().to_string());
-                    if dry {
-                        if delete {
-                            println!("   🗑️ [dry-run] DELETE {}", dup.display());
-                        } else {
-                            println!("   📦 [dry-run] MOVE {} → {:?}", dup.display(), dup_dir);
-                        }
-                    } else {
-                        if delete {
+                let history_file = path.join(".darwin_history.jsonl");
+                let mut history_out = if dry {
+                    None
+                } else {
+                    Some(
+                        OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&history_file)
+                            .with_context(|| {
+                                format!("Failed to open history file {:?}", history_file)
+                            })?,
+                    )
+                };
+
+                for (i, group) in groups.iter().enumerate() {
+                    println!("\n✨ Group {}:", i + 1);
+                    println!("   🏆 Keeping → {}", group[0].display());
+                    let retained = group[0].display().to_string();
+                    let mut culled_paths = Vec::new();
+                    let action_str = if delete { "deleted" } else { "moved" }.to_string();
+
+                    for dup in &group[1..] {
+                        culled_paths.push(dup.display().to_string());
+                        if dry {
+                            if delete {
+                                println!("   🗑️ [dry-run] DELETE {}", dup.display());
+                            } else {
+                                println!("   📦 [dry-run] MOVE {} → {:?}", dup.display(), dup_dir);
+                            }
+                        } else if delete {
                             fs::remove_file(dup)
                                 .with_context(|| format!("Failed to delete {}", dup.display()))?;
                             println!("   🗑️  Deleted {}", dup.display());
@@ -211,23 +231,68 @@ fn main() -> Result<()> {
                             println!("   📦 Moved {} → {:?}", dup.display(), dest);
                         }
                     }
+
+                    if let Some(out) = history_out.as_mut() {
+                        let record = CullHistoryRecord {
+                            timestamp: Utc::now().to_rfc3339(),
+                            retained,
+                            culled: culled_paths,
+                            action: action_str,
+                        };
+                        writeln!(out, "{}", serde_json::to_string(&record)?)?;
+                    }
                 }
-                if let Some(out) = history_out.as_mut() {
-                    let record = CullHistoryRecord {
-                        timestamp: Utc::now().to_rfc3339(),
-                        retained,
-                        culled: culled_paths,
-                        action,
-                    };
-                    writeln!(out, "{}", serde_json::to_string(&record)?)?;
+
+                if dry {
+                    println!("\n⚠️  Dry-run only; no files were changed.");
+                } else {
+                    println!(
+                        "\n✅ Recorded cull history in {}",
+                        path.join(".darwin_history.jsonl").display()
+                    );
                 }
             }
-            if dry {
-                println!("\n⚠️  Dry-run only; no files were changed.");
-            } else {
-                println!("\n✅ Recorded cull history in {}", history_file.display());
+
+            CullAction::Focus { min_focus } => {
+                println!("▶ Culling out-of-focus images in: {}", path.display());
+                let blurry = find_blurry(&path, min_focus)?;
+                if blurry.is_empty() {
+                    println!("No blurry images found (threshold {}).", min_focus);
+                    return Ok(());
+                }
+                let blur_dir = target_dir.unwrap_or_else(|| path.join("blurry"));
+                if !delete && !dry {
+                    fs::create_dir_all(&blur_dir)
+                        .with_context(|| format!("Failed to create directory {:?}", blur_dir))?;
+                }
+
+                for img in blurry {
+                    if dry {
+                        if delete {
+                            println!("   🗑️ [dry-run] DELETE {}", img.display());
+                        } else {
+                            println!("   📦 [dry-run] MOVE {} → {:?}", img.display(), blur_dir);
+                        }
+                    } else if delete {
+                        fs::remove_file(&img)
+                            .with_context(|| format!("Failed to delete {}", img.display()))?;
+                        println!("   🗑️  Deleted {}", img.display());
+                    } else {
+                        let file_name = img.file_name().unwrap();
+                        let dest = blur_dir.join(file_name);
+                        fs::rename(&img, &dest)
+                            .with_context(|| format!("Failed to move {:?} → {:?}", img, dest))?;
+                        println!("   📦 Moved {} → {:?}", img.display(), dest);
+                    }
+                }
+
+                if dry {
+                    println!("\n⚠️  Dry-run only; no files were changed.");
+                } else {
+                    println!("\n✅ Focus-based cull complete.");
+                }
             }
-        }
+        },
 
         Commands::History { path } => {
             let history_file = path.join(".darwin_history.jsonl");
@@ -254,20 +319,23 @@ fn main() -> Result<()> {
                 .with_context(|| format!("Could not open history file {:?}", history_file))?;
             let reader = BufReader::new(f);
 
-            // Collect only valid, "moved" records along with original lines
             let mut stored: Vec<(CullHistoryRecord, String)> = Vec::new();
             for line in reader.lines() {
                 let line = line?;
                 if line.trim().is_empty() {
                     continue;
                 }
-                match serde_json::from_str::<CullHistoryRecord>(&line) {
-                    Ok(rec) if rec.action == "moved" => stored.push((rec, line)),
-                    Ok(rec) => eprintln!(
-                        "⚠️ Skipping record {}: action was '{}'; cannot restore.",
-                        rec.timestamp, rec.action
-                    ),
-                    Err(err) => eprintln!("⚠️ Skipping malformed history entry: {}", err),
+                if let Ok(rec) = serde_json::from_str::<CullHistoryRecord>(&line) {
+                    if rec.action == "moved" {
+                        stored.push((rec, line));
+                    } else {
+                        eprintln!(
+                            "⚠️ Skipping record {}: action was '{}'; cannot restore.",
+                            rec.timestamp, rec.action
+                        );
+                    }
+                } else {
+                    eprintln!("⚠️ Skipping malformed history entry");
                 }
             }
 
@@ -275,7 +343,6 @@ fn main() -> Result<()> {
                 anyhow::bail!("No valid 'moved' history records to restore");
             }
 
-            // Determine which record indices to restore
             let restore_indices: Vec<usize> = if all {
                 (0..stored.len()).collect()
             } else {
@@ -290,7 +357,6 @@ fn main() -> Result<()> {
                 vec![idx]
             };
 
-            // Perform restorations
             for &i in &restore_indices {
                 let rec = &stored[i].0;
                 println!(
@@ -318,7 +384,6 @@ fn main() -> Result<()> {
                 }
             }
 
-            // Rewrite history without restored records
             let remaining: Vec<String> = stored
                 .into_iter()
                 .enumerate()
@@ -375,9 +440,17 @@ fn find_duplicates(dir: &Path) -> Result<Vec<Vec<PathBuf>>> {
         "{spinner:.green} Hashing images... {pos}/{len}",
     )?);
 
+    // start the “total” timer
+    let total_start = Instant::now();
+    // for calculating per-image average
+    let mut sum_hash_time = Duration::ZERO;
+
     let hasher = HasherConfig::new().hash_alg(HashAlg::Mean).to_hasher();
     let mut map: HashMap<String, Vec<PathBuf>> = HashMap::new();
     for path in images {
+        // start per-image timer
+        let img_start = Instant::now();
+
         let img = ImageReader::open(&path).with_context(|| format!("Failed to open {:?}", path))?;
         let img = img
             .decode()
@@ -385,9 +458,36 @@ fn find_duplicates(dir: &Path) -> Result<Vec<Vec<PathBuf>>> {
         let key = hasher.hash_image(&img).to_base64();
         map.entry(key).or_default().push(path.clone());
         pb.inc(1);
+
+        // record how long we spent hashing this one
+        sum_hash_time += img_start.elapsed();
     }
     pb.finish_with_message("Hashing complete");
+
+    // total elapsed wall-clock time
+    let total_elapsed = total_start.elapsed();
+    // compute average
+    let avg = if !map.is_empty() {
+        sum_hash_time / (map.values().flatten().count() as u32)
+    } else {
+        Duration::ZERO
+    };
+    println!(
+        "⏱  Total hashing time: {:.2?},  avg per image: {:.2?}",
+        total_elapsed, avg
+    );
+
     Ok(map.into_values().filter(|g| g.len() > 1).collect())
+}
+
+/// Placeholder for focus-based culling; returns empty list until implemented.
+fn find_blurry(dir: &Path, _threshold: f64) -> Result<Vec<PathBuf>> {
+    // TODO: implement focus/blurriness detection (e.g. variance of Laplacian)
+    print!(
+        "🔬 Measuring focus or images in {}... (not yet implemented)",
+        dir.display()
+    );
+    Ok(vec![])
 }
 
 /// Get the creation time (or modification time) of a file, falling back to UNIX_EPOCH on error
