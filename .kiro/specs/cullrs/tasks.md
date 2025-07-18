@@ -1,11 +1,30 @@
 # Implementation Plan
 
-- [ ] 1. Set up Tauri project structure
+- [x] 1. Set up Tauri project structure
 
   - Create Tauri application with Rust backend and Nuxt.js frontend
   - Configure project dependencies and build system
   - Set up basic project documentation and README
   - _Requirements: 1.1, 2.1_
+
+- [ ] 1.1 Add core Rust dependencies
+
+  - Add image processing: `image = "0.25"`, `img_hash = "3.2"`
+  - Add database: `rusqlite = { version = "0.32", features = ["bundled"] }`, `sled = "0.34"`
+  - Add async/parallel: `tokio = { version = "1.0", features = ["full"] }`, `rayon = "1.8"`
+  - Add serialization: `serde = { version = "1.0", features = ["derive"] }`, `serde_json = "1.0"`
+  - Add error handling: `thiserror = "2.0"`, `anyhow = "1.0"`
+  - Add utilities: `uuid = { version = "1.0", features = ["v4", "serde"] }`, `sha2 = "0.10"`, `walkdir = "2.4"`
+  - Add file system: `memmap2 = "0.9"` for memory-mapped files
+  - _Requirements: 1.1, 1.2, 3.1, 5.1_
+
+- [ ] 1.2 Set up core library structure
+
+  - Create modular library structure with separate services
+  - Set up lib.rs with public API exports
+  - Create service modules: scanner, hash, perceptual, scoring, database
+  - Add Tauri command handlers for frontend integration
+  - _Requirements: 1.1, 2.1, 5.1_
 
 - [ ] 2. Implement core data models and error handling
 
@@ -90,11 +109,11 @@
 
 - [ ] 6. Create Nuxt.js frontend foundation
 
-  - [ ] 6.1 Set up Nuxt 3 with modern tooling
+  - [x] 6.1 Set up Nuxt 4 with modern tooling
 
-    - Configure Nuxt 3 with Composition API
-    - Set up Tailwind CSS and shadcn-vue components
-    - Implement basic routing and state management
+    - Configure Nuxt 4 with Composition API and SSR disabled
+    - Set up Tailwind CSS 4 and shadcn-vue components
+    - Implement Pinia for state management
     - _Requirements: 2.1, 2.4_
 
   - [ ] 6.2 Implement Tauri backend commands

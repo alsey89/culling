@@ -6,6 +6,24 @@ CullRS (cullrs) is architected as a single Tauri desktop application with a shar
 
 ## Architecture
 
+### Project Structure
+
+```
+cullrs/
+├── app/                    # Nuxt.js frontend application
+│   ├── components/         # Vue components (shadcn-vue UI components)
+│   ├── pages/             # Nuxt pages and routing
+│   ├── assets/            # Static assets and styles
+│   └── lib/               # Frontend utilities
+├── src-tauri/             # Tauri Rust backend
+│   ├── src/               # Rust source code
+│   ├── Cargo.toml         # Rust dependencies
+│   └── tauri.conf.json    # Tauri configuration
+└── package.json           # Node.js dependencies
+```
+
+### System Architecture
+
 ```mermaid
 graph TB
     subgraph "Frontend Layer"
@@ -94,12 +112,14 @@ graph TB
 - Manages application state and configuration
 - Handles file system operations with proper permissions
 - Implements progress tracking for long-running operations
+- Uses Tauri 2.6 with modern plugin system
 
 **Nuxt.js Frontend**
 
-- Modern reactive UI using Vue 3 Composition API
-- Tailwind CSS for responsive styling
+- Nuxt 4 with Vue 3 Composition API and SSR disabled for desktop app
+- Tailwind CSS 4 with Vite plugin for responsive styling
 - shadcn-vue components for consistent design system
+- Pinia for state management
 - Image gallery with virtual scrolling for performance
 - Drag-and-drop interface for directory selection
 
