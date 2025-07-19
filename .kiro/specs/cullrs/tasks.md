@@ -7,7 +7,7 @@
   - Set up basic project documentation and README
   - _Requirements: 1.1, 2.1_
 
-- [ ] 1.1 Add core Rust dependencies
+- [x] 1.1 Add core Rust dependencies
 
   - Add image processing: `image = "0.25"`, `img_hash = "3.2"`
   - Add database: `rusqlite = { version = "0.32", features = ["bundled"] }`, `sled = "0.34"`
@@ -18,7 +18,7 @@
   - Add file system: `memmap2 = "0.9"` for memory-mapped files
   - _Requirements: 1.1, 1.2, 3.1, 5.1_
 
-- [ ] 1.2 Set up core library structure
+- [x] 1.2 Set up core library structure
 
   - Create modular library structure with separate services
   - Set up lib.rs with public API exports

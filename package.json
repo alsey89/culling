@@ -7,7 +7,10 @@
     "dev": "nuxt dev",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
-    "postinstall": "nuxt prepare"
+    "postinstall": "nuxt prepare",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@nuxt/eslint": "^1.6.0",
@@ -17,6 +20,8 @@
     "@nuxt/test-utils": "^3.19.2",
     "@pinia/nuxt": "^0.11.2",
     "@tailwindcss/vite": "^4.1.11",
+    "@tauri-apps/api": "^2.6.0",
+    "@tauri-apps/plugin-dialog": "^2.3.0",
     "@vee-validate/zod": "^4.15.1",
     "@vueuse/core": "^13.5.0",
     "class-variance-authority": "^0.7.1",
