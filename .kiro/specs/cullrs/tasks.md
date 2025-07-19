@@ -26,38 +26,38 @@
   - Add Tauri command handlers for frontend integration
   - _Requirements: 1.1, 2.1, 5.1_
 
-- [ ] 2. Implement core data models and error handling
+- [x] 2. Implement core data models and error handling
 
-  - [ ] 2.1 Create core data structures and types
+  - [x] 2.1 Create core data structures and types
 
     - Define ImageFile, DuplicateGroup, QualityScore structs
     - Implement serialization/deserialization for data models
     - Create comprehensive error types using thiserror
     - _Requirements: 1.1, 5.5_
 
-  - [ ] 2.2 Implement configuration management
+  - [x] 2.2 Implement configuration management
     - Create AppConfig struct with validation
     - Implement configuration loading from files and environment
     - Add configuration persistence and defaults
     - _Requirements: 7.1, 7.2, 7.4_
 
-- [ ] 3. Build database layer foundation
+- [x] 3. Build database layer foundation
 
-  - [ ] 3.1 Implement SQLite database setup and migrations
+  - [x] 3.1 Implement SQLite database setup and migrations
 
     - Create database schema with all required tables
     - Implement database migration system
     - Add connection management and pooling
     - _Requirements: 5.1, 5.4_
 
-  - [ ] 3.2 Create database access layer
+  - [x] 3.2 Create database access layer
 
     - Implement repository pattern for data access
     - Create CRUD operations for all entities
     - Add prepared statement management for performance
     - _Requirements: 5.1, 5.2_
 
-  - [ ] 3.3 Integrate Sled key-value store
+  - [x] 3.3 Integrate Sled key-value store
     - Set up Sled database for caching
     - Implement cache management utilities
     - Create cache invalidation mechanisms
@@ -65,21 +65,21 @@
 
 - [ ] 4. Implement file scanning and discovery
 
-  - [ ] 4.1 Create basic file scanner
+  - [x] 4.1 Create basic file scanner
 
     - Implement recursive directory traversal
     - Add file type filtering for supported image formats
     - Extract basic file metadata (size, modification time)
     - _Requirements: 1.1, 1.2, 5.1_
 
-  - [ ] 4.2 Add parallel processing to scanner
+  - [x] 4.2 Add parallel processing to scanner
 
     - Implement multi-threaded file processing using rayon
     - Add progress tracking and cancellation support
     - Optimize memory usage for large directory scans
     - _Requirements: 5.1, 5.2, 5.4_
 
-  - [ ] 4.3 Integrate scanner with database
+  - [-] 4.3 Integrate scanner with database
     - Store scanned file metadata in SQLite
     - Implement incremental scanning (skip unchanged files)
     - Add scan session tracking and recovery
@@ -87,14 +87,14 @@
 
 - [ ] 5. Build exact duplicate detection
 
-  - [ ] 5.1 Implement cryptographic hashing
+  - [x] 5.1 Implement cryptographic hashing
 
     - Create hash computation service using SHA-256
     - Add memory-mapped file reading for large files
     - Implement hash caching to avoid recomputation
     - _Requirements: 1.2, 1.3_
 
-  - [ ] 5.2 Create duplicate detection logic
+  - [x] 5.2 Create duplicate detection logic
 
     - Implement exact duplicate grouping by hash
     - Add duplicate group management in database
@@ -183,14 +183,14 @@
 
 - [ ] 10. Build image quality scoring system
 
-  - [ ] 10.1 Implement technical quality metrics
+  - [x] 10.1 Implement technical quality metrics
 
     - Create sharpness analysis using Laplacian variance
     - Add exposure and contrast evaluation
     - Implement basic composition analysis
     - _Requirements: 4.1, 4.2_
 
-  - [ ] 10.2 Create quality scoring service
+  - [x] 10.2 Create quality scoring service
 
     - Combine individual metrics into overall score
     - Add quality-based ranking for duplicate groups
