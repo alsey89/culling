@@ -1,75 +1,93 @@
-# Nuxt Minimal Starter
+# Cullrs
 
-Look at the [Nuxt documentation](https://nuxt.com/docs/getting-started/introduction) to learn more.
+A privacy-first desktop application that helps photographers quickly cull large photo sets and remove duplicates using on-device AI processing.
 
-## Setup
+**🔒 Privacy-First** • **⚡ Fast Native Performance** • **🆓 Open-Core Model**
 
-Make sure to install dependencies:
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Status](https://img.shields.io/badge/Status-Alpha-orange.svg)]()
+
+---
+
+## What is Cullrs?
+
+Cullrs eliminates the tedious work of photo culling by automatically detecting duplicates and grouping similar images, while keeping you in control with safe, reversible operations. Built for photographers who need to process thousands of images efficiently without compromising on safety or privacy.
+
+### Key Benefits
+
+- **70-90% reduction in culling time** for event photographers
+- **Zero cloud dependencies** - all processing happens on your device
+- **Non-destructive workflow** with comprehensive undo capabilities
+- **Professional integrations** with Lightroom, digiKam, and Photo Mechanic
+
+---
+
+## 🚀 Quick Start
 
 ```bash
-# npm
+# Clone and run
+git clone https://github.com/alsey89/cullrs.git
+cd cullrs
 npm install
-
-# pnpm
-pnpm install
-
-# yarn
-yarn install
-
-# bun
-bun install
+npm run tauri dev
 ```
 
-## Development Server
+> **Alpha Status:** Cullrs is in active development. Core features are functional but expect changes and occasional instability.
 
-Start the development server on `http://localhost:3000`:
+---
 
-```bash
-# npm
-npm run dev
+## ✨ What Makes Cullrs Different
 
-# pnpm
-pnpm dev
+**🆓 Powerful Free Core**
 
-# yarn
-yarn dev
+- Unlimited manual culling and organization
+- Exact duplicate detection using SHA-256 hashing
+- Visual similarity grouping with adjustable thresholds
+- Safe file operations with session-based undo
 
-# bun
-bun run dev
-```
+**💎 Pro Features** _(Coming Soon)_
 
-## Production
+- Smart auto-selection rules based on quality metrics
+- AI-powered image quality analysis (sharpness, exposure, noise)
+- Face and eye detection for portrait optimization
+- Professional workflow integrations and team collaboration
 
-Build the application for production:
+---
 
-```bash
-# npm
-npm run build
+## 🏗️ Built With
 
-# pnpm
-pnpm build
+- **Backend:** Rust (Tauri) for performance-critical operations
+- **Frontend:** Vue 3 + Nuxt + TypeScript for modern UI
+- **Storage:** SQLite for local project data
+- **Platforms:** macOS, Windows, Linux
 
-# yarn
-yarn build
+---
 
-# bun
-bun run build
-```
+## 📚 Documentation
 
-Locally preview production build:
+| Document                                          | Description                                      |
+| ------------------------------------------------- | ------------------------------------------------ |
+| **[📋 Product Requirements](docs/PRD.md)**        | Complete feature specifications and user stories |
+| **[🏗️ Architecture Guide](docs/ARCHITECTURE.md)** | Technical design and implementation details      |
+| **[🚧 Development Setup](docs/DEVELOPMENT.md)**   | Local environment and contribution guidelines    |
+| **[🧪 Testing Guide](docs/TESTING.md)**           | Testing strategy and quality assurance           |
 
-```bash
-# npm
-npm run preview
+---
 
-# pnpm
-pnpm preview
+## 🛣️ Roadmap
 
-# yarn
-yarn preview
+- **M1 - MVP** (8 weeks) - Core culling features and exact duplicate detection
+- **M2 - Pro Value** (6-8 weeks) - Auto-selection rules and quality metrics
+- **M3 - Advanced** (10-12 weeks) - AI features and team collaboration
 
-# bun
-bun run preview
-```
+---
 
-Check out the [deployment documentation](https://nuxt.com/docs/getting-started/deployment) for more information.
+## 🤝 Contributing
+
+We welcome contributions! Check out our [Development Guide](docs/DEVELOPMENT.md) to get started.
+
+---
+
+## 📄 License
+
+Open-Core model: **Core features** under MIT License • **Pro features** require commercial license
