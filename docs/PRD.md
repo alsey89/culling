@@ -110,14 +110,14 @@ This document defines the **feature scope, priorities, user stories, acceptance 
 ### Flow A — First Project (Free)
 
 1. Launch → Onboarding (Skip/Next).
-2. New Project → Pick source folders → Pick output folder → Scan (progress modal).
+2. New Project → Pick source folder → Auto-generate project name and output location → Scan (progress modal).
 3. Dashboard: tabs for **Duplicates**, **Similar Groups**, **Unreviewed**.
 4. Compare view → Mark _Keep_ (star) / _Remove_ (trash).
 5. Preview output structure and manifest.
-6. Apply: Copy/hardlink "Keep" files to output folder.
+6. Apply: Copy/hardlink "Keep" files to Documents/Cullrs/{project-name}.
 7. Summary with source → output mapping.
 
-**ACs:** Scan cancelable; export includes reasons; output preview accurate; originals never modified; etc.
+**ACs:** Scan cancelable; export includes reasons; output preview accurate; originals never modified; automatic output folder creation; etc.
 
 ### Flow B — Auto‑Select (Pro)
 
@@ -153,16 +153,18 @@ This document defines the **feature scope, priorities, user stories, acceptance 
 
 **Requirements**
 
-- Create/Open project with: name, source paths (list), output folder path, exclude patterns (globs), file types (image defaults: jpg/jpeg/png/heic/tiff/webp/raw families), batch cap (respect SKU).
+- Create/Open project with: source folder selection, auto-generated project name (editable), automatic output path (Documents/Cullrs/{project-name}), exclude patterns (globs), file types (image defaults: jpg/jpeg/png/heic/tiff/webp/raw families), batch cap (respect SKU).
 - Display progress (files scanned / time remaining estimate).
 - Pause/Resume/Cancel.
+- Project list for quick access to previously created projects.
 
 **Acceptance**
 
 - AC-001-1: Exclude patterns are applied before expensive operations.
 - AC-001-2: Cancel leaves no partial writes beyond index cache.
 - AC-001-3: Large directories (≥250k files) do not freeze UI; progress updates every ≤250ms.
-- AC-001-4: Output folder validation prevents conflicts with source paths.
+- AC-001-4: Automatic output folder creation with fallback for inaccessible locations.
+- AC-001-5: Project name auto-fills from source folder name but remains editable.
 
 ### F-002 Exact Duplicate Detection (P0, Free)
 
@@ -206,17 +208,18 @@ This document defines the **feature scope, priorities, user stories, acceptance 
 
 **Requirements**
 
-- Output Mode: Copy/Hardlink selected "Keep" files to a new output folder, leaving originals untouched.
+- Output Mode: Copy/Hardlink selected "Keep" files to automatic output folder (Documents/Cullrs/{project-name}), leaving originals untouched.
 - Optional actions: Move to Trash/Quarantine for "Remove" files (user choice).
 - Preserve folder structure in output or flatten based on user preference.
 - Generate side-by-side manifest showing source → output mapping.
 
 **Acceptance**
 
-- AC-005-1: Output folder is completely separate from source; originals never modified.
+- AC-005-1: Automatic output folder is completely separate from source; originals never modified.
 - AC-005-2: User can preview exact output structure before applying.
 - AC-005-3: Folder structure preservation maintains relative paths from source root.
 - AC-005-4: Optional "Remove" actions require separate confirmation with summary.
+- AC-005-5: Automatic output folder creation with error handling for inaccessible locations.
 
 ### F-006 Export Manifests (P0, Free)
 

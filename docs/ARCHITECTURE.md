@@ -166,8 +166,8 @@ pub struct Decision {
 pub struct Project {
     pub id: String,
     pub name: String,
-    pub source_paths: Vec<PathBuf>,
-    pub output_path: PathBuf,
+    pub source_path: PathBuf,        // Single source folder
+    pub output_path: PathBuf,        // Auto-generated: Documents/Cullrs/{name}
     pub exclude_patterns: Vec<String>,
     pub file_types: Vec<String>,
     pub scan_status: ScanStatus,
@@ -662,8 +662,8 @@ export const useTauri = () => {
 CREATE TABLE projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    source_paths TEXT NOT NULL, -- JSON array
-    output_path TEXT NOT NULL,  -- Output folder path
+    source_path TEXT NOT NULL,  -- Single source folder
+    output_path TEXT NOT NULL,  -- Auto-generated: Documents/Cullrs/{name}
     exclude_patterns TEXT,      -- JSON array
     file_types TEXT,           -- JSON array
     scan_status TEXT NOT NULL,

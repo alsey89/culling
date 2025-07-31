@@ -109,7 +109,7 @@ cullrs/
 
 ### Frontend Development
 
-The frontend uses Vue 3 with Nuxt, TypeScript, and Tailwind CSS.
+The frontend uses Vue 3 with Nuxt 4, TypeScript, and Tailwind CSS.
 
 ```bash
 # Run frontend only (useful for UI work)
@@ -170,6 +170,10 @@ npm run tauri icon
 - **Component Naming**: PascalCase for component files
 - **Composition API**: Use `<script setup>` syntax
 - **State Management**: Pinia stores with composable pattern
+- **CSS**:
+  - Tailwind as much as it makes sense
+  - Avoid margins, use padding and gap instead
+- **Comments**: use comments to segment code into functional groups
 
 Example component structure:
 
