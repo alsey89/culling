@@ -100,6 +100,11 @@
 </template>
 
 <script setup>
+definePageMeta({
+    title: 'Home - Cullrs',
+    description: 'Quickly cull large photo sets and remove duplicates with privacy-first, on-device processing.',
+    layout: "none"
+})
 import { ref, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
