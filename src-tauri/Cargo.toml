@@ -32,6 +32,10 @@ diesel_migrations = "2.1"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 thiserror = "1.0"
 dirs = "5.0"
+rayon = "1.8"
+glob = "0.3"
+walkdir = "2.4"
+image = "0.24"
 
 [dev-dependencies]
 tempfile = "3.0"
