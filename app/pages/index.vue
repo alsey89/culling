@@ -3,99 +3,241 @@
         <!-- Header -->
         <header class="border-b bg-white/80 backdrop-blur-sm dark:bg-slate-900/80">
             <div class="container mx-auto px-6 py-4 flex items-center justify-between">
-                <div class="flex items-center space-x-3">
+                <div class="flex items-center gap-3">
                     <div
                         class="w-8 h-8 bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg flex items-center justify-center">
                         <span class="text-white font-bold text-sm">C</span>
                     </div>
                     <h1 class="text-xl font-semibold text-slate-900 dark:text-white">Cullrs</h1>
                 </div>
-                <div class="text-sm text-slate-500 dark:text-slate-400">
+                <Badge variant="secondary" class="text-xs">
                     Privacy-first photo culling
-                </div>
+                </Badge>
             </div>
         </header>
 
         <!-- Main Content -->
         <main class="container mx-auto px-6 py-12">
-            <div class="max-w-2xl mx-auto">
+            <div class="max-w-4xl mx-auto">
                 <!-- Welcome Section -->
                 <div class="text-center mb-12">
-                    <h2 class="text-3xl font-bold text-slate-900 dark:text-white mb-4">
+                    <h2 class="text-4xl font-bold text-slate-900 dark:text-white mb-4">
                         Welcome to Cullrs
                     </h2>
-                    <p class="text-lg text-slate-600 dark:text-slate-300 mb-8">
-                        Quickly cull large photo sets and remove duplicates with privacy-first, on-device processing.
+                    <p class="text-lg text-slate-600 dark:text-slate-300 max-w-2xl mx-auto">
+                        Efficiently manage large photo collections through automated duplicate detection and similarity
+                        grouping.
+                        All processing happens on your device for complete privacy.
                     </p>
                 </div>
 
-                <!-- Project Creation Card -->
-                <Card class="p-8">
-                    <CardHeader class="text-center pb-6">
-                        <CardTitle class="text-xl">Create New Project</CardTitle>
-                        <CardDescription>
-                            Start by creating a project and selecting your source images
-                        </CardDescription>
-                    </CardHeader>
+                <div class="grid lg:grid-cols-3 gap-8">
+                    <!-- Project Creation Card -->
+                    <div class="lg:col-span-2">
+                        <Card>
+                            <CardHeader>
+                                <CardTitle class="flex items-center gap-2">
+                                    <Icon name="lucide:folder-plus" class="w-5 h-5" />
+                                    Create New Project
+                                </CardTitle>
+                                <CardDescription>
+                                    Simply select a source folder to get started. We'll handle the rest automatically.
+                                </CardDescription>
+                            </CardHeader>
 
-                    <CardContent class="space-y-6">
-                        <div class="space-y-2">
-                            <Label for="project-name">Project Name</Label>
-                            <Input id="project-name" v-model="projectName" placeholder="e.g., Wedding Photos 2024"
-                                class="w-full" />
-                        </div>
+                            <CardContent class="space-y-6">
+                                <!-- Source Folder Selection -->
+                                <div class="space-y-2">
+                                    <Label for="source-folder" class="text-sm">
+                                        Source Folder
+                                    </Label>
+                                    <div class="flex gap-2">
+                                        <Input id="source-folder" v-model="sourceFolder"
+                                            placeholder="Select folder containing photos..." readonly class="flex-1"
+                                            :class="{ 'border-red-500': errors.sourceFolder }" />
+                                        <Button @click="selectSourceFolder">
+                                            <Icon name="lucide:folder-open" class="w-4 h-4 mr-2" />
+                                            Browse
+                                        </Button>
+                                    </div>
+                                    <p v-if="errors.sourceFolder" class="text-sm text-red-500">
+                                        {{ errors.sourceFolder }}
+                                    </p>
+                                    <p v-else class="text-sm text-slate-500 dark:text-slate-400">
+                                        Choose the folder containing photos you want to cull
+                                    </p>
+                                </div>
 
-                        <div class="space-y-2">
-                            <Label for="source-dir">Source Directory</Label>
-                            <div class="flex space-x-2">
-                                <Input id="source-dir" v-model="sourceDir"
-                                    placeholder="Select folder containing photos..." readonly class="flex-1" />
-                                <Button @click="selectSourceDirectory" variant="outline">
-                                    Browse
+                                <!-- Project Name (Auto-generated, editable) -->
+                                <div class="space-y-2">
+                                    <Label for="project-name" class="text-sm font-medium">
+                                        Project Name
+                                    </Label>
+                                    <Input id="project-name" v-model="projectName"
+                                        placeholder="Project name will be auto-generated..."
+                                        :class="{ 'border-red-500': errors.projectName }" />
+                                    <p v-if="errors.projectName" class="text-sm text-red-500">
+                                        {{ errors.projectName }}
+                                    </p>
+                                    <p v-else class="text-sm text-slate-500 dark:text-slate-400">
+                                        Auto-generated from folder name, but you can edit it
+                                    </p>
+                                </div>
+
+                                <!-- Output Location (Read-only, auto-generated) -->
+                                <div class="space-y-2">
+                                    <Label class="text-sm font-medium">
+                                        Output Location
+                                    </Label>
+                                    <div
+                                        class="px-3 py-2 bg-slate-50 dark:bg-slate-800 border rounded-md text-sm text-slate-600 dark:text-slate-300">
+                                        {{ outputPath || 'Will be auto-generated: Documents/Cullrs/{project-name}' }}
+                                    </div>
+                                    <p class="text-sm text-slate-500 dark:text-slate-400">
+                                        Culled photos will be automatically organized here.
+                                        <Button variant="link" class="p-0" @click="showOutputSettings = true">
+                                            Change Default Location
+                                        </Button>
+                                    </p>
+                                </div>
+
+                                <!-- File Type Filters -->
+                                <div class="space-y-2">
+                                    <Label class="text-sm font-medium">
+                                        Supported File Types
+                                    </Label>
+                                    <div class="flex flex-wrap gap-2">
+                                        <Badge v-for="type in supportedFileTypes" :key="type" variant="secondary"
+                                            class="text-xs">
+                                            {{ type.toUpperCase() }}
+                                        </Badge>
+                                    </div>
+                                    <p class="text-sm text-slate-500 dark:text-slate-400">
+                                        Only these image formats will be processed
+                                    </p>
+                                </div>
+                            </CardContent>
+
+                            <CardFooter class="flex gap-3">
+                                <Button @click="createProject" class="flex-1"
+                                    :disabled="!canCreateProject || isCreating">
+                                    <Icon v-if="isCreating" name="svg-spinners:6-dots-rotate" class="w-4 h-4 mr-2" />
+                                    <Icon v-else name="lucide:play" class="w-4 h-4 mr-2" />
+                                    {{ isCreating ? 'Creating Project...' : 'Create Project' }}
                                 </Button>
-                            </div>
-                            <p class="text-sm text-slate-500 dark:text-slate-400">
-                                Choose the folder containing photos you want to cull
-                            </p>
-                        </div>
+                            </CardFooter>
+                        </Card>
+                    </div>
 
-                        <div class="space-y-2">
-                            <Label for="output-dir">Output Directory</Label>
-                            <div class="flex space-x-2">
-                                <Input id="output-dir" v-model="outputDir" placeholder="Select output folder..."
-                                    readonly class="flex-1" />
-                                <Button @click="selectOutputDirectory" variant="outline">
-                                    Browse
-                                </Button>
-                            </div>
-                            <p class="text-sm text-slate-500 dark:text-slate-400">
-                                Selected photos will be copied here
-                            </p>
-                        </div>
-                    </CardContent>
+                    <!-- Recent Projects Sidebar -->
+                    <div class="space-y-6">
+                        <Card>
+                            <CardHeader>
+                                <CardTitle class="flex items-center gap-2 text-base">
+                                    <Icon name="lucide:clock" class="w-4 h-4" />
+                                    Recent Projects
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                                <div v-if="recentProjects && recentProjects.length === 0" class="text-center py-8">
+                                    <Icon name="lucide:folder-x"
+                                        class="w-12 h-12 mx-auto text-slate-300 dark:text-slate-600 mb-3" />
+                                    <p class="text-sm text-slate-500 dark:text-slate-400">
+                                        No recent projects yet
+                                    </p>
+                                    <p class="text-xs text-slate-400 dark:text-slate-500 mt-1">
+                                        Create your first project to get started
+                                    </p>
+                                </div>
+                                <div v-else class="space-y-2">
+                                    <Button v-for="project in recentProjects" :key="project.id"
+                                        @click="openProject(project)" variant="ghost"
+                                        class="w-full justify-start text-left p-3 h-auto">
+                                        <div class="flex-1 min-w-0">
+                                            <div class="font-medium text-sm truncate">
+                                                {{ project.name }}
+                                            </div>
+                                            <div class="text-xs text-slate-500 dark:text-slate-400 truncate">
+                                                {{ formatPath(project.sourcePath) }}
+                                            </div>
+                                            <div class="text-xs text-slate-400 dark:text-slate-500">
+                                                {{ formatDate(project.updatedAt) }}
+                                            </div>
+                                        </div>
+                                        <Icon name="lucide:chevron-right" class="w-4 h-4 text-slate-400" />
+                                    </Button>
+                                </div>
+                            </CardContent>
+                        </Card>
 
-                    <CardFooter class="pt-6">
-                        <Button @click="createProject" class="w-full" :disabled="!canCreateProject || isCreating">
-                            <span v-if="isCreating" class="flex items-center">
-                                <Icon name="svg-spinners:6-dots-rotate" class="w-4 h-4 mr-2" />
-                                Creating Project...
-                            </span>
-                            <span v-else>Create Project</span>
-                        </Button>
-                    </CardFooter>
-                </Card>
-
-                <!-- Recent Projects (placeholder) -->
-                <div class="mt-12">
-                    <h3 class="text-lg font-semibold text-slate-900 dark:text-white mb-4">
-                        Recent Projects
-                    </h3>
-                    <div class="text-center py-8 text-slate-500 dark:text-slate-400">
-                        No recent projects yet. Create your first project above.
+                        <!-- Quick Stats Card -->
+                        <Card>
+                            <CardHeader>
+                                <CardTitle class="flex items-center gap-2 text-base">
+                                    <Icon name="lucide:info" class="w-4 h-4" />
+                                    Features
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent class="space-y-3">
+                                <div class="flex items-center gap-3 text-sm">
+                                    <Icon name="lucide:shield-check" class="w-4 h-4 text-green-500" />
+                                    <span>100% local processing</span>
+                                </div>
+                                <div class="flex items-center gap-3 text-sm">
+                                    <Icon name="lucide:copy" class="w-4 h-4 text-blue-500" />
+                                    <span>Exact duplicate detection</span>
+                                </div>
+                                <div class="flex items-center gap-3 text-sm">
+                                    <Icon name="lucide:eye" class="w-4 h-4 text-purple-500" />
+                                    <span>Visual similarity grouping</span>
+                                </div>
+                                <div class="flex items-center gap-3 text-sm">
+                                    <Icon name="lucide:hard-drive" class="w-4 h-4 text-orange-500" />
+                                    <span>Safe, non-destructive operations</span>
+                                </div>
+                            </CardContent>
+                        </Card>
                     </div>
                 </div>
             </div>
         </main>
+
+        <!-- Output Settings Dialog -->
+        <Dialog v-model:open="showOutputSettings">
+            <DialogContent>
+                <DialogHeader>
+                    <DialogTitle>Default Output Location</DialogTitle>
+                    <DialogDescription>
+                        Change where culled photos are automatically saved by default
+                    </DialogDescription>
+                </DialogHeader>
+                <div class="space-y-4">
+                    <div class="space-y-2">
+                        <Label>Current Default Location</Label>
+                        <div class="px-3 py-2 bg-slate-50 dark:bg-slate-800 border rounded-md text-sm">
+                            {{ defaultOutputLocation }}
+                        </div>
+                    </div>
+                    <div class="space-y-2">
+                        <Label>New Default Location</Label>
+                        <div class="flex gap-2">
+                            <Input v-model="newDefaultLocation" readonly class="flex-1" />
+                            <Button @click="selectNewDefaultLocation" variant="outline">
+                                Browse
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+                <DialogFooter>
+                    <Button @click="showOutputSettings = false" variant="outline">
+                        Cancel
+                    </Button>
+                    <Button @click="saveOutputSettings" :disabled="!newDefaultLocation">
+                        Save Changes
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
     </div>
 </template>
 
@@ -115,27 +257,106 @@ const router = useRouter()
 
 // Form state
 const projectName = ref('')
+const sourceFolder = ref('')
 const sourceDir = ref('')
 const outputDir = ref('')
+const outputPath = ref('')
 const isCreating = ref(false)
+
+// Form validation
+const errors = ref({
+    sourceFolder: '',
+    projectName: ''
+})
+
+// Settings dialog
+const showOutputSettings = ref(false)
+const defaultOutputLocation = ref('/Users/john/Documents/Cullrs')
+const newDefaultLocation = ref('')
+
+// Supported file types
+const supportedFileTypes = ref(['jpg', 'jpeg', 'png', 'tiff', 'tif', 'bmp', 'webp', 'heic', 'raw', 'cr2', 'nef', 'arw'])
 
 // Computed properties
 const canCreateProject = computed(() => {
-    return projectName.value.trim() && sourceDir.value && outputDir.value
+    return projectName.value.trim() && sourceFolder.value && outputPath.value
+})
+
+// Placeholder recent projects data
+const recentProjects = computed(() => {
+    return [
+        {
+            id: '1',
+            name: 'Summer Vacation 2024',
+            sourcePath: '/Users/john/Pictures/Summer2024',
+            outputPath: '/Users/john/Documents/Cullrs/Summer Vacation 2024',
+            updatedAt: new Date('2024-07-15T14:30:00'),
+            status: 'completed',
+            stats: {
+                totalPhotos: 1247,
+                duplicatesFound: 89,
+                similarGroups: 23,
+                spaceSaved: '2.3 GB'
+            }
+        },
+        {
+            id: '2',
+            name: 'Wedding Photos - Sarah & Mike',
+            sourcePath: '/Users/john/Pictures/Wedding_SarahMike',
+            outputPath: '/Users/john/Documents/Cullrs/Wedding Photos - Sarah & Mike',
+            updatedAt: new Date('2024-06-28T09:15:00'),
+            status: 'completed',
+            stats: {
+                totalPhotos: 2156,
+                duplicatesFound: 156,
+                similarGroups: 45,
+                spaceSaved: '4.7 GB'
+            }
+        },
+        {
+            id: '3',
+            name: 'iPhone Camera Roll Backup',
+            sourcePath: '/Users/john/Pictures/iPhone_Backup_2024',
+            outputPath: '/Users/john/Documents/Cullrs/iPhone Camera Roll Backup',
+            updatedAt: new Date('2024-06-10T16:45:00'),
+            status: 'in_progress',
+            stats: {
+                totalPhotos: 3892,
+                duplicatesFound: 234,
+                similarGroups: 67,
+                spaceSaved: '1.8 GB'
+            }
+        },
+    ]
 })
 
 // Directory selection using Tauri dialog
-const selectSourceDirectory = async () => {
+const selectSourceFolder = async () => {
     try {
         const selected = await open({
             directory: true,
             multiple: false,
             title: 'Select Source Directory',
-            defaultPath: sourceDir.value || undefined
+            defaultPath: sourceFolder.value || undefined
         })
 
         if (selected) {
+            sourceFolder.value = selected
             sourceDir.value = selected
+
+            // Auto-generate project name from folder name
+            const folderName = selected.split('/').pop()
+            if (!projectName.value) {
+                projectName.value = folderName.replace(/[_-]/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
+            }
+
+            // Auto-generate output path
+            outputPath.value = `${defaultOutputLocation.value}/${projectName.value || folderName}`
+            outputDir.value = outputPath.value
+
+            // Clear any previous errors
+            errors.value.sourceFolder = ''
+
             toast.success('Source directory selected', {
                 description: `Selected: ${selected}`
             })
@@ -166,6 +387,61 @@ const selectOutputDirectory = async () => {
         toast.error('Failed to select directory', {
             description: error.message
         })
+    }
+}
+
+// Utility functions
+const formatPath = (path) => {
+    if (!path) return ''
+    const parts = path.split('/')
+    if (parts.length > 3) {
+        return `.../${parts.slice(-2).join('/')}`
+    }
+    return path
+}
+
+const formatDate = (date) => {
+    if (!date) return ''
+    const now = new Date()
+    const diffInDays = Math.floor((now - date) / (1000 * 60 * 60 * 24))
+
+    if (diffInDays === 0) return 'Today'
+    if (diffInDays === 1) return 'Yesterday'
+    if (diffInDays < 7) return `${diffInDays} days ago`
+    if (diffInDays < 30) return `${Math.floor(diffInDays / 7)} weeks ago`
+    return date.toLocaleDateString()
+}
+
+const openProject = (project) => {
+    toast.info(`Opening project: ${project.name}`)
+    // Navigate to project workspace with project data
+    router.push(`/project?id=${project.id}`)
+}
+
+const selectNewDefaultLocation = async () => {
+    try {
+        const selected = await open({
+            directory: true,
+            multiple: false,
+            title: 'Select New Default Output Location'
+        })
+
+        if (selected) {
+            newDefaultLocation.value = selected
+        }
+    } catch (error) {
+        toast.error('Failed to select directory', {
+            description: error.message
+        })
+    }
+}
+
+const saveOutputSettings = () => {
+    if (newDefaultLocation.value) {
+        defaultOutputLocation.value = newDefaultLocation.value
+        toast.success('Default output location updated')
+        showOutputSettings.value = false
+        newDefaultLocation.value = ''
     }
 }
 

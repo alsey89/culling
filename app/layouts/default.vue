@@ -1,10 +1,10 @@
 <template>
     <div class="flex h-screen bg-background">
         <!-- Sidebar -->
-        <aside class="w-60 bg-sidebar border-r-5 border-sidebar-border flex flex-col neo-shadow-lg">
+        <aside class="w-60 bg-sidebar border-r-5 border-sidebar-border flex flex-col neo-shadow">
             <!-- Header -->
             <div class="px-6 py-4 border-sidebar-border flex items-end min-h-[72px] gap-2">
-                <Button variant="border" class="flex items-center gap-3 p-2 h-auto" @click="$router.push('/')">
+                <Button class="flex items-center gap-3 p-2 h-auto" @click="$router.push('/')">
                     <span class="text-secondary-foreground font-bold text-xl">📸</span>
                 </Button>
                 <h1 class="text-3xl font-black text-sidebar-foreground tracking-tight">PhotoCull</h1>
@@ -140,38 +140,31 @@
                     <!-- Action Buttons -->
                     <div class="flex items-center gap-6 ml-8">
                         <!-- Import Button -->
-                        <Button variant="outline" class="font-bold">
+                        <Button class="font-bold">
                             <Icon name="lucide:download" class="w-6 h-6" />
                             IMPORT
                         </Button>
 
                         <!-- Export Button -->
-                        <Button variant="outline" class="font-bold">
+                        <Button class="font-bold">
                             <Icon name="lucide:upload" class="w-6 h-6" />
                             EXPORT
                         </Button>
 
                         <!-- View Toggle -->
-                        <ToggleGroup v-model="viewMode" type="single" variant="outline" size="icon"
-                            class="grid grid-cols-2">
+                        <ToggleGroup v-model="viewMode" type="single" size="icon" class="grid grid-cols-2">
                             <ToggleGroupItem value="grid" aria-label="Grid View">
                                 <!-- <Icon name="lucide:grid-3x3" class="w-6 h-6" /> -->
-                                <Button variant="outline" class="p-2">
+                                <Button class="p-2">
                                     <Icon name="lucide:grid-3x3" class="w-8 h-8" />
                                 </Button>
                             </ToggleGroupItem>
                             <ToggleGroupItem value="list" aria-label="List View">
-                                <Button variant="outline" class="p-2">
+                                <Button class="p-2">
                                     <Icon name="lucide:list" class="w-8 h-8" />
                                 </Button>
                             </ToggleGroupItem>
                         </ToggleGroup>
-
-                        <!-- Profile Avatar -->
-                        <div
-                            class="w-12 h-12 bg-accent border-3 border-black dark:border-white flex items-center justify-center neo-shadow">
-                            <span class="text-accent-foreground text-lg font-black">U</span>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -192,13 +185,13 @@
                     <!-- Action Buttons -->
                     <div class="flex items-center gap-4">
                         <!-- Metadata Button -->
-                        <Button variant="outline" class="font-bold">
+                        <Button variant="secondary" class="font-bold">
                             <Icon name="lucide:info" class="w-6 h-6" />
                             METADATA
                         </Button>
 
                         <!-- Batch Operations Button -->
-                        <Button variant="secondary" class="font-black text-lg px-8">
+                        <Button class="font-black text-lg px-8">
                             <Icon name="lucide:package" class="w-6 h-6" />
                             BATCH OPERATIONS
                         </Button>
