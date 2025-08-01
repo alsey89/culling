@@ -54,3 +54,4 @@ coverage/
 *.temp
 
 .kiro
+.github/copilot-instructions.md

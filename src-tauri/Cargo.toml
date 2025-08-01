@@ -27,3 +27,11 @@ tauri-plugin-dialog = "2"
 tokio = { version = "1.0", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
 md5 = "0.7"
+diesel = { version = "2.1", features = ["sqlite", "chrono", "r2d2"] }
+diesel_migrations = "2.1"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+thiserror = "1.0"
+dirs = "5.0"
+
+[dev-dependencies]
+tempfile = "3.0"

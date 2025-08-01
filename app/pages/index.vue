@@ -247,7 +247,7 @@ definePageMeta({
     description: 'Quickly cull large photo sets and remove duplicates with privacy-first, on-device processing.',
     layout: "none"
 })
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { toast } from 'vue-sonner'
@@ -271,7 +271,7 @@ const errors = ref({
 
 // Settings dialog
 const showOutputSettings = ref(false)
-const defaultOutputLocation = ref('/Users/john/Documents/Cullrs')
+const defaultOutputLocation = ref('')
 const newDefaultLocation = ref('')
 
 // Supported file types
@@ -282,52 +282,29 @@ const canCreateProject = computed(() => {
     return projectName.value.trim() && sourceFolder.value && outputPath.value
 })
 
-// Placeholder recent projects data
-const recentProjects = computed(() => {
-    return [
-        {
-            id: '1',
-            name: 'Summer Vacation 2024',
-            sourcePath: '/Users/john/Pictures/Summer2024',
-            outputPath: '/Users/john/Documents/Cullrs/Summer Vacation 2024',
-            updatedAt: new Date('2024-07-15T14:30:00'),
-            status: 'completed',
-            stats: {
-                totalPhotos: 1247,
-                duplicatesFound: 89,
-                similarGroups: 23,
-                spaceSaved: '2.3 GB'
-            }
-        },
-        {
-            id: '2',
-            name: 'Wedding Photos - Sarah & Mike',
-            sourcePath: '/Users/john/Pictures/Wedding_SarahMike',
-            outputPath: '/Users/john/Documents/Cullrs/Wedding Photos - Sarah & Mike',
-            updatedAt: new Date('2024-06-28T09:15:00'),
-            status: 'completed',
-            stats: {
-                totalPhotos: 2156,
-                duplicatesFound: 156,
-                similarGroups: 45,
-                spaceSaved: '4.7 GB'
-            }
-        },
-        {
-            id: '3',
-            name: 'iPhone Camera Roll Backup',
-            sourcePath: '/Users/john/Pictures/iPhone_Backup_2024',
-            outputPath: '/Users/john/Documents/Cullrs/iPhone Camera Roll Backup',
-            updatedAt: new Date('2024-06-10T16:45:00'),
-            status: 'in_progress',
-            stats: {
-                totalPhotos: 3892,
-                duplicatesFound: 234,
-                similarGroups: 67,
-                spaceSaved: '1.8 GB'
-            }
-        },
-    ]
+const recentProjects = ref([])
+
+// Initialize default output location
+onMounted(async () => {
+    try {
+        const _recentProjects = await invoke('get_recent_projects')
+        recentProjects.value = _recentProjects
+    } catch (error) {
+        console.error('Failed to get load recent projects:', error)
+    }
+    try {
+        const defaultLocation = await invoke('get_default_output_location')
+        defaultOutputLocation.value = defaultLocation
+
+        // Set the output path to the default location + project name if no output is set
+        if (!outputPath.value && projectName.value) {
+            outputPath.value = `${defaultLocation}/${projectName.value}`
+        }
+    } catch (error) {
+        console.error('Failed to get default output location:', error)
+        // Fallback to a reasonable default
+        defaultOutputLocation.value = './Cullrs'
+    }
 })
 
 // Directory selection using Tauri dialog
