@@ -900,7 +900,7 @@ npm install
 cargo install tauri-cli
 
 # Development mode
-npm run tauri dev
+npm run tauri:dev
 ```
 
 ### 9.2 Build Pipeline
@@ -910,10 +910,10 @@ npm run tauri dev
 npm run tauri build
 
 # Platform-specific builds
-npm run tauri build -- --target x86_64-apple-darwin    # macOS Intel
-npm run tauri build -- --target aarch64-apple-darwin   # macOS Apple Silicon
-npm run tauri build -- --target x86_64-pc-windows-msvc # Windows x64
-npm run tauri build -- --target x86_64-unknown-linux-gnu # Linux x64
+npm run tauri:build -- --target x86_64-apple-darwin    # macOS Intel
+npm run tauri:build -- --target aarch64-apple-darwin   # macOS Apple Silicon
+npm run tauri:build -- --target x86_64-pc-windows-msvc # Windows x64
+npm run tauri:build -- --target x86_64-unknown-linux-gnu # Linux x64
 ```
 
 ### 9.3 Distribution

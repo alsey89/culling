@@ -70,7 +70,7 @@ npm install -g @tauri-apps/cli
 
 ```bash
 # Start the development server with hot reload
-npm run tauri dev
+npm run tauri:dev
 
 # Alternative: use cargo directly
 cargo tauri dev
@@ -150,13 +150,13 @@ cargo clippy
 
 ```bash
 # Start the full application with hot reload
-npm run tauri dev
+npm run tauri:dev
 
 # Build for production
-npm run tauri build
+npm run tauri:build
 
 # Generate Tauri icons
-npm run tauri icon
+npm run tauri:icon
 ```
 
 ---
@@ -358,17 +358,17 @@ Example launch.json for VS Code:
 
 ```bash
 # Debug build (fast compilation, larger binary)
-npm run tauri build -- --debug
+npm run tauri:build -- --debug
 
 # Development build with specific target
-npm run tauri build -- --target x86_64-apple-darwin
+npm run tauri:build -- --target x86_64-apple-darwin
 ```
 
 ### Production Builds
 
 ```bash
 # Production build (optimized, smaller binary)
-npm run tauri build
+npm run tauri:build
 
 # Build for all supported platforms
 npm run build:all
@@ -415,7 +415,7 @@ npm install
 
 ```bash
 # Solution: Restart development server
-npm run tauri dev
+npm run tauri:dev
 ```
 
 **Issue**: Database migration errors
@@ -423,7 +423,7 @@ npm run tauri dev
 ```bash
 # Solution: Reset database and re-run migrations
 rm -f src-tauri/data/app.db
-npm run tauri dev
+npm run tauri:dev
 ```
 
 ### Getting Help
@@ -455,4 +455,4 @@ npm run tauri dev
 
 ---
 
-Ready to start developing? Run `npm run tauri dev` and start building! 🚀
+Ready to start developing? Run `npm run tauri:dev` and start building! 🚀

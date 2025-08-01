@@ -33,6 +33,11 @@ pub fn run() {
             load_project,
             scan_directory,
             get_scan_progress,
+            // Project management commands
+            get_project_stats,
+            rename_project,
+            delete_project,
+            duplicate_project,
             // Image processing commands
             get_image_metadata,
             compute_image_hash,

@@ -29,7 +29,7 @@ Cullrs eliminates the tedious work of photo culling by automatically detecting d
 git clone https://github.com/alsey89/cullrs.git
 cd cullrs
 npm install
-npm run tauri dev
+npm run tauri:dev
 ```
 
 > **Alpha Status:** Cullrs is in active development. Core features are functional but expect changes and occasional instability.

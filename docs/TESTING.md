@@ -609,7 +609,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - run: npm ci
-      - run: npm run tauri build
+      - run: npm run tauri:build
       - run: npm run test:integration
 ```
 

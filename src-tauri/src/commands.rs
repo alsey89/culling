@@ -8,6 +8,7 @@ use crate::database::{
 };
 use chrono::Utc;
 use diesel::prelude::*;
+use serde::Serialize;
 use std::sync::Arc;
 use tauri::State;
 use tokio::sync::Mutex;
@@ -209,6 +210,180 @@ pub async fn load_project(
     *project_state = Some(project);
 
     Ok(db_project)
+}
+
+#[tauri::command]
+pub async fn get_project_stats(project_id: String) -> Result<ProjectStats, String> {
+    use crate::schema::{assets, decisions, variant_groups};
+
+    let mut conn = get_connection().map_err(|e| e.to_string())?;
+
+    // Get asset count
+    let asset_count: i64 = assets::table
+        .filter(assets::project_id.eq(&project_id))
+        .count()
+        .get_result(&mut conn)
+        .map_err(|e| format!("Failed to count assets: {}", e))?;
+
+    // Get decision counts
+    let keep_count: i64 = decisions::table
+        .filter(decisions::state.eq("keep"))
+        .inner_join(assets::table.on(assets::id.eq(decisions::asset_id)))
+        .filter(assets::project_id.eq(&project_id))
+        .count()
+        .get_result(&mut conn)
+        .unwrap_or(0);
+
+    let remove_count: i64 = decisions::table
+        .filter(decisions::state.eq("remove"))
+        .inner_join(assets::table.on(assets::id.eq(decisions::asset_id)))
+        .filter(assets::project_id.eq(&project_id))
+        .count()
+        .get_result(&mut conn)
+        .unwrap_or(0);
+
+    // Get group counts
+    let duplicate_groups: i64 = variant_groups::table
+        .filter(variant_groups::project_id.eq(&project_id))
+        .filter(variant_groups::group_type.eq("exact"))
+        .count()
+        .get_result(&mut conn)
+        .unwrap_or(0);
+
+    let similar_groups: i64 = variant_groups::table
+        .filter(variant_groups::project_id.eq(&project_id))
+        .filter(variant_groups::group_type.eq("similar"))
+        .count()
+        .get_result(&mut conn)
+        .unwrap_or(0);
+
+    Ok(ProjectStats {
+        total_assets: asset_count,
+        keep_count,
+        remove_count,
+        undecided_count: asset_count - keep_count - remove_count,
+        duplicate_groups,
+        similar_groups,
+    })
+}
+
+#[tauri::command]
+pub async fn rename_project(project_id: String, new_name: String) -> Result<(), String> {
+    use crate::schema::projects::dsl::*;
+
+    let mut conn = get_connection().map_err(|e| e.to_string())?;
+
+    let now = Utc::now().to_rfc3339();
+
+    diesel::update(projects.filter(id.eq(&project_id)))
+        .set((name.eq(&new_name), updated_at.eq(&now)))
+        .execute(&mut conn)
+        .map_err(|e| format!("Failed to rename project: {}", e))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_project(project_id: String) -> Result<(), String> {
+    use crate::schema::{asset_groups, assets, decisions, projects, variant_groups};
+
+    let mut conn = get_connection().map_err(|e| e.to_string())?;
+
+    // Delete in order to respect foreign key constraints
+    // First delete asset_groups
+    diesel::delete(
+        asset_groups::table.filter(
+            asset_groups::asset_id.eq_any(
+                assets::table
+                    .filter(assets::project_id.eq(&project_id))
+                    .select(assets::id),
+            ),
+        ),
+    )
+    .execute(&mut conn)
+    .map_err(|e| format!("Failed to delete asset groups: {}", e))?;
+
+    // Delete decisions
+    diesel::delete(
+        decisions::table.filter(
+            decisions::asset_id.eq_any(
+                assets::table
+                    .filter(assets::project_id.eq(&project_id))
+                    .select(assets::id),
+            ),
+        ),
+    )
+    .execute(&mut conn)
+    .map_err(|e| format!("Failed to delete decisions: {}", e))?;
+
+    // Delete variant groups
+    diesel::delete(variant_groups::table.filter(variant_groups::project_id.eq(&project_id)))
+        .execute(&mut conn)
+        .map_err(|e| format!("Failed to delete variant groups: {}", e))?;
+
+    // Delete assets
+    diesel::delete(assets::table.filter(assets::project_id.eq(&project_id)))
+        .execute(&mut conn)
+        .map_err(|e| format!("Failed to delete assets: {}", e))?;
+
+    // Finally delete the project
+    diesel::delete(projects::table.filter(projects::id.eq(&project_id)))
+        .execute(&mut conn)
+        .map_err(|e| format!("Failed to delete project: {}", e))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn duplicate_project(project_id: String, new_name: String) -> Result<DbProject, String> {
+    use crate::schema::projects::dsl::*;
+
+    let mut conn = get_connection().map_err(|e| e.to_string())?;
+
+    // Get the original project
+    let original_project = projects
+        .filter(id.eq(&project_id))
+        .first::<DbProject>(&mut conn)
+        .map_err(|e| format!("Failed to find project: {}", e))?;
+
+    // Create new project with duplicated settings
+    let new_project_id = format!("prj_{}", Uuid::new_v4().simple());
+    let now = Utc::now().to_rfc3339();
+
+    let new_project = NewProject {
+        id: new_project_id.clone(),
+        name: new_name,
+        source_path: original_project.source_path,
+        output_path: original_project.output_path,
+        exclude_patterns: original_project.exclude_patterns,
+        file_types: original_project.file_types,
+        scan_status: String::from(ScanStatus::NotStarted),
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    diesel::insert_into(projects)
+        .values(&new_project)
+        .execute(&mut conn)
+        .map_err(|e| format!("Failed to create duplicate project: {}", e))?;
+
+    // Return the new project
+    let duplicated_project = projects
+        .filter(id.eq(&new_project_id))
+        .first::<DbProject>(&mut conn)
+        .map_err(|e| format!("Failed to load duplicated project: {}", e))?;
+
+    Ok(duplicated_project)
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProjectStats {
+    pub total_assets: i64,
+    pub keep_count: i64,
+    pub remove_count: i64,
+    pub undecided_count: i64,
+    pub duplicate_groups: i64,
+    pub similar_groups: i64,
 }
 #[cfg(test)]
 mod tests {
