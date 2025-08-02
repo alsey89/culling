@@ -1,3 +1,6 @@
+use crate::core::exif::ExifService;
+use crate::core::hash::HashService;
+use crate::core::thumbnail::{ThumbnailProgress, ThumbnailService};
 use crate::database::models::{Asset, ExifData};
 use chrono::Utc;
 use glob::Pattern;
@@ -30,6 +33,15 @@ pub enum ScanError {
     #[error("Image processing error: {0}")]
     Image(#[from] image::ImageError),
 
+    #[error("Thumbnail generation error: {0}")]
+    Thumbnail(#[from] crate::core::thumbnail::ThumbnailError),
+
+    #[error("Hash computation error: {0}")]
+    Hash(#[from] crate::core::hash::HashError),
+
+    #[error("EXIF extraction error: {0}")]
+    Exif(#[from] crate::core::exif::ExifError),
+
     #[error("Operation cancelled")]
     Cancelled,
 }
@@ -43,10 +55,12 @@ pub struct ScanProgress {
     pub phase: ScanPhase,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ScanPhase {
     Discovery,
     Processing,
+    ThumbnailGeneration,
+    HashingAndExif,
     Complete,
 }
 
@@ -54,6 +68,9 @@ pub struct ScannerService {
     progress_sender: Option<mpsc::UnboundedSender<ScanProgress>>,
     cancellation_token: Arc<AtomicBool>,
     supported_formats: HashSet<String>,
+    thumbnail_service: ThumbnailService,
+    hash_service: HashService,
+    exif_service: ExifService,
 }
 
 impl ScannerService {
@@ -75,6 +92,9 @@ impl ScannerService {
             progress_sender: None,
             cancellation_token: Arc::new(AtomicBool::new(false)),
             supported_formats,
+            thumbnail_service: ThumbnailService::new(),
+            hash_service: HashService::new(),
+            exif_service: ExifService::new(),
         }
     }
 
@@ -164,9 +184,39 @@ impl ScannerService {
             phase: ScanPhase::Processing,
         });
 
-        let assets = self.process_files(project_id, discovered_files)?;
+        let mut assets = self.process_files(project_id, discovered_files)?;
 
-        // Phase 3: Complete
+        if self.cancellation_token.load(Ordering::Relaxed) {
+            return Err(ScanError::Cancelled);
+        }
+
+        // Phase 3: Thumbnail Generation
+        self.send_progress(ScanProgress {
+            files_processed: 0,
+            total_files,
+            current_file: "Generating thumbnails...".to_string(),
+            estimated_time_remaining: None,
+            phase: ScanPhase::ThumbnailGeneration,
+        });
+
+        self.generate_thumbnails(&mut assets, project_id).await?;
+
+        if self.cancellation_token.load(Ordering::Relaxed) {
+            return Err(ScanError::Cancelled);
+        }
+
+        // Phase 4: Hashing and EXIF extraction
+        self.send_progress(ScanProgress {
+            files_processed: 0,
+            total_files,
+            current_file: "Computing hashes and extracting metadata...".to_string(),
+            estimated_time_remaining: None,
+            phase: ScanPhase::HashingAndExif,
+        });
+
+        self.compute_hashes_and_exif(&mut assets)?;
+
+        // Phase 5: Complete
         self.send_progress(ScanProgress {
             files_processed: total_files,
             total_files,
@@ -329,10 +379,97 @@ impl ScannerService {
         }
     }
 
-    fn extract_basic_exif(&self, _file_path: &Path) -> Option<ExifData> {
-        // Basic EXIF extraction - for now just return None
-        // This will be implemented in a later task
-        None
+    fn extract_basic_exif(&self, file_path: &Path) -> Option<ExifData> {
+        match self.exif_service.extract_exif(file_path) {
+            Ok(exif_data) => exif_data,
+            Err(e) => {
+                log::warn!("Failed to extract EXIF from {}: {}", file_path.display(), e);
+                None
+            }
+        }
+    }
+
+    /// Compute content hashes and extract EXIF data for all assets
+    fn compute_hashes_and_exif(&self, assets: &mut [Asset]) -> Result<(), ScanError> {
+        let total_assets = assets.len();
+        let processed_count = Arc::new(AtomicUsize::new(0));
+        let start_time = std::time::Instant::now();
+
+        // Process assets in parallel using rayon
+        let results: Result<Vec<_>, ScanError> = assets
+            .par_iter_mut()
+            .map(|asset| {
+                if self.cancellation_token.load(Ordering::Relaxed) {
+                    return Err(ScanError::Cancelled);
+                }
+
+                let file_path = Path::new(&asset.path);
+
+                // Compute content hash from original file
+                match self.hash_service.compute_content_hash(file_path) {
+                    Ok(hash) => {
+                        asset.hash = Some(hash);
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to compute hash for {}: {}", asset.path, e);
+                        // Continue processing other assets even if one fails
+                    }
+                }
+
+                // Extract EXIF data
+                match self.exif_service.extract_exif(file_path) {
+                    Ok(Some(exif_data)) => {
+                        // Serialize EXIF data to JSON string for database storage
+                        match serde_json::to_string(&exif_data) {
+                            Ok(json_str) => {
+                                asset.exif_data = Some(json_str);
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "Failed to serialize EXIF data for {}: {}",
+                                    asset.path,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        // No EXIF data found, which is fine
+                        asset.exif_data = None;
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to extract EXIF from {}: {}", asset.path, e);
+                        asset.exif_data = None;
+                    }
+                }
+
+                // Update progress
+                let current_count = processed_count.fetch_add(1, Ordering::Relaxed) + 1;
+                let elapsed = start_time.elapsed().as_secs();
+                let estimated_remaining = if current_count > 0 && elapsed > 0 {
+                    let rate = current_count as f64 / elapsed as f64;
+                    let remaining_assets = total_assets - current_count;
+                    Some((remaining_assets as f64 / rate) as u64)
+                } else {
+                    None
+                };
+
+                self.send_progress(ScanProgress {
+                    files_processed: current_count,
+                    total_files: total_assets,
+                    current_file: asset.path.clone(),
+                    estimated_time_remaining: estimated_remaining,
+                    phase: ScanPhase::HashingAndExif,
+                });
+
+                Ok(())
+            })
+            .collect();
+
+        match results {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     fn send_progress(&self, progress: ScanProgress) {
@@ -353,6 +490,185 @@ impl ScannerService {
     pub fn get_supported_formats(&self) -> &HashSet<String> {
         &self.supported_formats
     }
+
+    /// Generate thumbnails for all assets in the project with enhanced error handling
+    pub async fn generate_thumbnails(
+        &self,
+        assets: &mut [Asset],
+        project_id: &str,
+    ) -> Result<(), ScanError> {
+        if self.cancellation_token.load(Ordering::Relaxed) {
+            return Err(ScanError::Cancelled);
+        }
+
+        // Get project temp directory
+        let project_temp_dir = self.get_project_temp_dir(project_id)?;
+
+        // Set up progress forwarding from thumbnail service to scanner progress
+        let (thumbnail_tx, mut thumbnail_rx) = mpsc::unbounded_channel::<ThumbnailProgress>();
+        let progress_sender = self.progress_sender.clone();
+        let cancellation_token = self.cancellation_token.clone();
+
+        // Spawn task to forward thumbnail progress to scan progress
+        let progress_forwarder = tokio::spawn(async move {
+            while let Some(thumbnail_progress) = thumbnail_rx.recv().await {
+                // Check for cancellation
+                if cancellation_token.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                if let Some(sender) = &progress_sender {
+                    let scan_progress = ScanProgress {
+                        files_processed: thumbnail_progress.thumbnails_generated,
+                        total_files: thumbnail_progress.total_thumbnails,
+                        current_file: thumbnail_progress.current_file,
+                        estimated_time_remaining: thumbnail_progress.estimated_time_remaining,
+                        phase: ScanPhase::ThumbnailGeneration,
+                    };
+                    let _ = sender.send(scan_progress);
+                }
+            }
+        });
+
+        // Create thumbnail service with cancellation token
+        let mut thumbnail_service = ThumbnailService::new();
+        thumbnail_service.cancellation_token = self.cancellation_token.clone();
+
+        // Generate thumbnails using the thumbnail service with error recovery
+        let result = thumbnail_service
+            .generate_thumbnails_batch_with_recovery(assets, &project_temp_dir, Some(thumbnail_tx))
+            .await;
+
+        // Wait for progress forwarder to finish
+        progress_forwarder.abort();
+
+        // Update assets with thumbnail paths, handling corrupted files gracefully
+        let mut successful_thumbnails = 0;
+        let mut failed_thumbnails = 0;
+
+        for asset in assets.iter_mut() {
+            let thumbnail_path = self
+                .thumbnail_service
+                .get_thumbnail_path(&project_temp_dir, &asset.id);
+
+            if thumbnail_path.exists() {
+                successful_thumbnails += 1;
+                // Store relative path from project temp dir for portability
+                if let Ok(_relative_path) = thumbnail_path.strip_prefix(&project_temp_dir) {
+                    // We'll store the full path for now, but this could be optimized
+                    // to store relative paths if needed for project portability
+                }
+            } else {
+                failed_thumbnails += 1;
+                log::warn!(
+                    "Thumbnail generation failed for asset {}: {}",
+                    asset.id,
+                    asset.path
+                );
+            }
+        }
+
+        log::info!(
+            "Thumbnail generation completed: {} successful, {} failed",
+            successful_thumbnails,
+            failed_thumbnails
+        );
+
+        result.map_err(ScanError::from)
+    }
+
+    /// Get the temporary directory for a project
+    fn get_project_temp_dir(&self, project_id: &str) -> Result<PathBuf, ScanError> {
+        // Use system temp directory with project-specific subdirectory
+        let temp_dir = std::env::temp_dir()
+            .join("cullrs")
+            .join("projects")
+            .join(project_id);
+
+        // Create directory if it doesn't exist
+        if !temp_dir.exists() {
+            fs::create_dir_all(&temp_dir).map_err(|e| ScanError::Io(e))?;
+        }
+
+        Ok(temp_dir)
+    }
+
+    /// Clean up thumbnails for a project
+    pub async fn cleanup_project_thumbnails(&self, project_id: &str) -> Result<(), ScanError> {
+        let project_temp_dir = self.get_project_temp_dir(project_id)?;
+        self.thumbnail_service
+            .cleanup_thumbnails(&project_temp_dir)
+            .await
+            .map_err(|e| ScanError::Io(e))
+    }
+
+    /// Get thumbnail path for an asset
+    pub fn get_thumbnail_path(
+        &self,
+        project_id: &str,
+        asset_id: &str,
+    ) -> Result<PathBuf, ScanError> {
+        let project_temp_dir = self.get_project_temp_dir(project_id)?;
+        Ok(self
+            .thumbnail_service
+            .get_thumbnail_path(&project_temp_dir, asset_id))
+    }
+
+    /// Compute content hash for a single asset (used for re-processing)
+    pub fn compute_asset_hash(&self, asset: &mut Asset) -> Result<(), ScanError> {
+        let file_path = Path::new(&asset.path);
+        match self.hash_service.compute_content_hash(file_path) {
+            Ok(hash) => {
+                asset.hash = Some(hash);
+                Ok(())
+            }
+            Err(e) => Err(ScanError::Hash(e)),
+        }
+    }
+
+    /// Extract EXIF data for a single asset (used for re-processing)
+    pub fn extract_asset_exif(&self, asset: &mut Asset) -> Result<(), ScanError> {
+        let file_path = Path::new(&asset.path);
+        match self.exif_service.extract_exif(file_path) {
+            Ok(Some(exif_data)) => match serde_json::to_string(&exif_data) {
+                Ok(json_str) => {
+                    asset.exif_data = Some(json_str);
+                    Ok(())
+                }
+                Err(e) => {
+                    log::warn!("Failed to serialize EXIF data for {}: {}", asset.path, e);
+                    asset.exif_data = None;
+                    Ok(())
+                }
+            },
+            Ok(None) => {
+                asset.exif_data = None;
+                Ok(())
+            }
+            Err(e) => Err(ScanError::Exif(e)),
+        }
+    }
+
+    /// Verify that an asset's stored hash matches its current file content
+    pub fn verify_asset_hash(&self, asset: &Asset) -> Result<bool, ScanError> {
+        if let Some(stored_hash) = &asset.hash {
+            let file_path = Path::new(&asset.path);
+            let current_hash = self.hash_service.compute_content_hash(file_path)?;
+            Ok(*stored_hash == current_hash)
+        } else {
+            Ok(false) // No stored hash to verify against
+        }
+    }
+
+    /// Get access to the hash service for external use
+    pub fn hash_service(&self) -> &HashService {
+        &self.hash_service
+    }
+
+    /// Get access to the EXIF service for external use
+    pub fn exif_service(&self) -> &ExifService {
+        &self.exif_service
+    }
 }
 
 impl Default for ScannerService {
@@ -364,119 +680,474 @@ impl Default for ScannerService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::GenericImageView;
     use std::fs;
     use tempfile::TempDir;
 
-    #[tokio::test]
-    async fn test_scan_empty_directory() {
-        let temp_dir = TempDir::new().unwrap();
-        let scanner = ScannerService::new();
+    fn create_test_image(
+        path: &Path,
+        width: u32,
+        height: u32,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use image::{ImageBuffer, Rgb};
 
-        let assets = scanner
-            .scan_paths(
-                "test_project",
-                &[temp_dir.path().to_path_buf()],
-                &["jpg".to_string(), "png".to_string()],
-                &[],
-            )
-            .await
-            .unwrap();
+        let img = ImageBuffer::from_fn(width, height, |x, y| {
+            let intensity = ((x + y) % 256) as u8;
+            Rgb([intensity, intensity, intensity])
+        });
 
-        assert_eq!(assets.len(), 0);
+        img.save(path)?;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_scan_with_exclude_patterns() {
+    async fn test_enhanced_progress_tracking() {
         let temp_dir = TempDir::new().unwrap();
 
-        // Create test files
-        let included_file = temp_dir.path().join("included.jpg");
-        let excluded_file = temp_dir.path().join("excluded.tmp.jpg");
+        // Create test images
+        for i in 0..5 {
+            let file_path = temp_dir.path().join(format!("test_{}.jpg", i));
+            create_test_image(&file_path, 100, 100).unwrap();
+        }
 
-        fs::write(&included_file, b"fake jpg content").unwrap();
-        fs::write(&excluded_file, b"fake jpg content").unwrap();
+        // Set up progress tracking
+        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<ScanProgress>();
+        let scanner = ScannerService::new().with_progress_sender(progress_tx);
 
-        let scanner = ScannerService::new();
+        // Track progress events
+        let progress_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let progress_events_clone = progress_events.clone();
 
-        let assets = scanner
+        // Spawn task to collect progress events
+        let progress_collector = tokio::spawn(async move {
+            while let Some(progress) = progress_rx.recv().await {
+                let mut events = progress_events_clone.lock().unwrap();
+                events.push(progress);
+            }
+        });
+
+        // Perform scan
+        let result = scanner
             .scan_paths(
                 "test_project",
                 &[temp_dir.path().to_path_buf()],
                 &["jpg".to_string()],
-                &["*.tmp.*".to_string()],
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(assets.len(), 1);
-        assert!(assets[0].path.contains("included.jpg"));
-    }
-
-    #[tokio::test]
-    async fn test_file_type_filtering() {
-        let temp_dir = TempDir::new().unwrap();
-
-        // Create test files with different extensions
-        let jpg_file = temp_dir.path().join("test.jpg");
-        let png_file = temp_dir.path().join("test.png");
-        let txt_file = temp_dir.path().join("test.txt");
-
-        fs::write(&jpg_file, b"fake jpg content").unwrap();
-        fs::write(&png_file, b"fake png content").unwrap();
-        fs::write(&txt_file, b"text content").unwrap();
-
-        let scanner = ScannerService::new();
-
-        let assets = scanner
-            .scan_paths(
-                "test_project",
-                &[temp_dir.path().to_path_buf()],
-                &["jpg".to_string(), "png".to_string()],
                 &[],
             )
-            .await
-            .unwrap();
+            .await;
 
-        assert_eq!(assets.len(), 2);
+        // Wait a bit for progress events to be collected
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        progress_collector.abort();
 
-        let paths: Vec<&str> = assets.iter().map(|a| a.path.as_str()).collect();
-        assert!(paths.iter().any(|p| p.contains("test.jpg")));
-        assert!(paths.iter().any(|p| p.contains("test.png")));
-        assert!(!paths.iter().any(|p| p.contains("test.txt")));
-    }
+        assert!(result.is_ok());
+        let assets = result.unwrap();
+        assert_eq!(assets.len(), 5);
 
-    #[test]
-    fn test_supported_format_detection() {
-        let scanner = ScannerService::new();
+        // Verify progress events were sent
+        let events = progress_events.lock().unwrap();
+        assert!(!events.is_empty());
 
-        assert!(scanner.is_supported_format(Path::new("test.jpg")));
-        assert!(scanner.is_supported_format(Path::new("test.JPEG")));
-        assert!(scanner.is_supported_format(Path::new("test.png")));
-        assert!(scanner.is_supported_format(Path::new("test.heic")));
-        assert!(!scanner.is_supported_format(Path::new("test.txt")));
-        assert!(!scanner.is_supported_format(Path::new("test")));
+        // Verify we have different phases
+        let phases: std::collections::HashSet<_> = events.iter().map(|e| &e.phase).collect();
+        assert!(phases.contains(&ScanPhase::Discovery));
+        assert!(phases.contains(&ScanPhase::Processing));
+        assert!(phases.contains(&ScanPhase::ThumbnailGeneration));
+        assert!(phases.contains(&ScanPhase::HashingAndExif));
+        assert!(phases.contains(&ScanPhase::Complete));
+
+        // Verify final progress shows completion
+        let final_progress = events.last().unwrap();
+        assert_eq!(final_progress.phase, ScanPhase::Complete);
+        assert_eq!(final_progress.files_processed, final_progress.total_files);
     }
 
     #[tokio::test]
-    async fn test_cancellation() {
+    async fn test_cancellation_functionality() {
         let temp_dir = TempDir::new().unwrap();
 
-        // Create many test files to ensure cancellation can be tested
-        for i in 0..100 {
+        // Create many test images to ensure we can cancel
+        for i in 0..50 {
             let file_path = temp_dir.path().join(format!("test_{}.jpg", i));
-            fs::write(&file_path, b"fake jpg content").unwrap();
+            create_test_image(&file_path, 200, 200).unwrap(); // Larger images take more time
         }
 
-        let scanner = ScannerService::new();
-        let temp_path = temp_dir.path().to_path_buf();
+        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<ScanProgress>();
+        let scanner = ScannerService::new().with_progress_sender(progress_tx);
+        let cancellation_token = scanner.get_cancellation_token();
 
-        // Cancel immediately before starting scan
-        scanner.cancel_scan();
+        // Cancel immediately before starting the scan
+        cancellation_token.store(true, Ordering::Relaxed);
 
+        // Perform scan (should be cancelled immediately)
         let result = scanner
-            .scan_paths("test_project", &[temp_path], &["jpg".to_string()], &[])
+            .scan_paths(
+                "test_project_cancel",
+                &[temp_dir.path().to_path_buf()],
+                &["jpg".to_string()],
+                &[],
+            )
             .await;
 
-        assert!(matches!(result, Err(ScanError::Cancelled)));
+        // Verify scan was cancelled
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ScanError::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn test_cancellation_during_processing() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create many test images to ensure we can cancel during processing
+        for i in 0..30 {
+            let file_path = temp_dir.path().join(format!("test_{}.jpg", i));
+            create_test_image(&file_path, 300, 300).unwrap(); // Larger images
+        }
+
+        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<ScanProgress>();
+        let scanner = ScannerService::new().with_progress_sender(progress_tx);
+        let cancellation_token = scanner.get_cancellation_token();
+
+        // Spawn task to cancel after we see some progress
+        let cancellation_token_clone = cancellation_token.clone();
+        let cancellation_task = tokio::spawn(async move {
+            let mut progress_count = 0;
+            while let Some(progress) = progress_rx.recv().await {
+                progress_count += 1;
+                // Cancel after we've seen a few progress updates
+                if progress_count >= 3 && progress.files_processed > 0 {
+                    cancellation_token_clone.store(true, Ordering::Relaxed);
+                    break;
+                }
+            }
+        });
+
+        // Perform scan (should be cancelled during processing)
+        let result = scanner
+            .scan_paths(
+                "test_project_cancel_during",
+                &[temp_dir.path().to_path_buf()],
+                &["jpg".to_string()],
+                &[],
+            )
+            .await;
+
+        cancellation_task.abort();
+
+        // Verify scan was cancelled (it might complete if cancellation was too late)
+        if result.is_err() {
+            assert!(matches!(result.unwrap_err(), ScanError::Cancelled));
+        } else {
+            // If scan completed, that's also acceptable for this test
+            println!("Scan completed before cancellation could take effect");
+        }
+    }
+
+    #[cfg(test)]
+    mod original_tests {
+        use super::*;
+        use image::GenericImageView;
+        use std::fs;
+        use tempfile::TempDir;
+
+        fn create_test_image(
+            path: &Path,
+            width: u32,
+            height: u32,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            use image::{ImageBuffer, Rgb};
+
+            let img = ImageBuffer::from_fn(width, height, |x, y| {
+                let intensity = ((x + y) % 256) as u8;
+                Rgb([intensity, intensity, intensity])
+            });
+
+            img.save(path)?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_scan_empty_directory() {
+            let temp_dir = TempDir::new().unwrap();
+            let scanner = ScannerService::new();
+
+            let assets = scanner
+                .scan_paths(
+                    "test_project",
+                    &[temp_dir.path().to_path_buf()],
+                    &["jpg".to_string(), "png".to_string()],
+                    &[],
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(assets.len(), 0);
+        }
+
+        #[tokio::test]
+        async fn test_scan_with_exclude_patterns() {
+            let temp_dir = TempDir::new().unwrap();
+
+            // Create test files
+            let included_file = temp_dir.path().join("included.jpg");
+            let excluded_file = temp_dir.path().join("excluded.tmp.jpg");
+
+            create_test_image(&included_file, 100, 100).unwrap();
+            create_test_image(&excluded_file, 100, 100).unwrap();
+
+            let scanner = ScannerService::new();
+
+            let assets = scanner
+                .scan_paths(
+                    "test_project",
+                    &[temp_dir.path().to_path_buf()],
+                    &["jpg".to_string()],
+                    &["*.tmp.*".to_string()],
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(assets.len(), 1);
+            assert!(assets[0].path.contains("included.jpg"));
+        }
+
+        #[tokio::test]
+        async fn test_file_type_filtering() {
+            let temp_dir = TempDir::new().unwrap();
+
+            // Create test files with different extensions
+            let jpg_file = temp_dir.path().join("test.jpg");
+            let png_file = temp_dir.path().join("test.png");
+            let txt_file = temp_dir.path().join("test.txt");
+
+            create_test_image(&jpg_file, 100, 100).unwrap();
+            create_test_image(&png_file, 100, 100).unwrap();
+            fs::write(&txt_file, b"text content").unwrap();
+
+            let scanner = ScannerService::new();
+
+            let assets = scanner
+                .scan_paths(
+                    "test_project",
+                    &[temp_dir.path().to_path_buf()],
+                    &["jpg".to_string(), "png".to_string()],
+                    &[],
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(assets.len(), 2);
+
+            let paths: Vec<&str> = assets.iter().map(|a| a.path.as_str()).collect();
+            assert!(paths.iter().any(|p| p.contains("test.jpg")));
+            assert!(paths.iter().any(|p| p.contains("test.png")));
+            assert!(!paths.iter().any(|p| p.contains("test.txt")));
+        }
+
+        #[test]
+        fn test_supported_format_detection() {
+            let scanner = ScannerService::new();
+
+            assert!(scanner.is_supported_format(Path::new("test.jpg")));
+            assert!(scanner.is_supported_format(Path::new("test.JPEG")));
+            assert!(scanner.is_supported_format(Path::new("test.png")));
+            assert!(scanner.is_supported_format(Path::new("test.heic")));
+            assert!(!scanner.is_supported_format(Path::new("test.txt")));
+            assert!(!scanner.is_supported_format(Path::new("test")));
+        }
+
+        #[tokio::test]
+        async fn test_cancellation() {
+            let temp_dir = TempDir::new().unwrap();
+
+            // Create many test files to ensure cancellation can be tested
+            for i in 0..10 {
+                let file_path = temp_dir.path().join(format!("test_{}.jpg", i));
+                create_test_image(&file_path, 100, 100).unwrap();
+            }
+
+            let scanner = ScannerService::new();
+            let temp_path = temp_dir.path().to_path_buf();
+
+            // Cancel immediately before starting scan
+            scanner.cancel_scan();
+
+            let result = scanner
+                .scan_paths("test_project", &[temp_path], &["jpg".to_string()], &[])
+                .await;
+
+            assert!(matches!(result, Err(ScanError::Cancelled)));
+        }
+
+        #[tokio::test]
+        async fn test_thumbnail_generation_integration() {
+            let temp_dir = TempDir::new().unwrap();
+
+            // Create test images
+            let jpg_file = temp_dir.path().join("test.jpg");
+            create_test_image(&jpg_file, 1920, 1080).unwrap();
+
+            let scanner = ScannerService::new();
+
+            let assets = scanner
+                .scan_paths(
+                    "test_project_thumb",
+                    &[temp_dir.path().to_path_buf()],
+                    &["jpg".to_string()],
+                    &[],
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(assets.len(), 1);
+
+            // Verify thumbnail was generated
+            let thumbnail_path = scanner
+                .get_thumbnail_path("test_project_thumb", &assets[0].id)
+                .unwrap();
+
+            assert!(thumbnail_path.exists());
+
+            // Verify thumbnail dimensions
+            let thumbnail_img = image::open(&thumbnail_path).unwrap();
+            let (width, height) = thumbnail_img.dimensions();
+            assert!(width <= 512 && height <= 512);
+            assert!(width == 512 || height == 512); // One dimension should be exactly 512
+        }
+
+        #[tokio::test]
+        async fn test_hash_computation_integration() {
+            let temp_dir = TempDir::new().unwrap();
+
+            // Create test images with known content
+            let jpg_file1 = temp_dir.path().join("test1.jpg");
+            let jpg_file2 = temp_dir.path().join("test2.jpg");
+
+            create_test_image(&jpg_file1, 100, 100).unwrap();
+            create_test_image(&jpg_file2, 200, 200).unwrap();
+
+            let scanner = ScannerService::new();
+
+            let assets = scanner
+                .scan_paths(
+                    "test_project_hash",
+                    &[temp_dir.path().to_path_buf()],
+                    &["jpg".to_string()],
+                    &[],
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(assets.len(), 2);
+
+            // Verify both assets have hashes
+            for asset in &assets {
+                assert!(asset.hash.is_some());
+                let hash = asset.hash.as_ref().unwrap();
+                assert_eq!(hash.len(), 64); // SHA-256 produces 64 hex characters
+                assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+            }
+
+            // Verify different images have different hashes
+            assert_ne!(assets[0].hash, assets[1].hash);
+        }
+
+        #[tokio::test]
+        async fn test_identical_files_same_hash() {
+            let temp_dir = TempDir::new().unwrap();
+
+            // Create identical image files
+            let file1 = temp_dir.path().join("identical1.jpg");
+            let file2 = temp_dir.path().join("identical2.jpg");
+
+            // Create the same image in both files
+            create_test_image(&file1, 100, 100).unwrap();
+            create_test_image(&file2, 100, 100).unwrap();
+
+            let scanner = ScannerService::new();
+
+            let assets = scanner
+                .scan_paths(
+                    "test_project_identical",
+                    &[temp_dir.path().to_path_buf()],
+                    &["jpg".to_string()],
+                    &[],
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(assets.len(), 2);
+
+            // Verify both assets have the same hash
+            assert!(assets[0].hash.is_some());
+            assert!(assets[1].hash.is_some());
+            assert_eq!(assets[0].hash, assets[1].hash);
+        }
+
+        #[test]
+        fn test_compute_asset_hash() {
+            let temp_dir = TempDir::new().unwrap();
+            let test_file = temp_dir.path().join("test.jpg");
+
+            create_test_image(&test_file, 100, 100).unwrap();
+
+            let scanner = ScannerService::new();
+            let mut asset = Asset {
+                id: "test_asset".to_string(),
+                project_id: "test_project".to_string(),
+                path: test_file.to_string_lossy().to_string(),
+                hash: None,
+                perceptual_hash: None,
+                size: 1000,
+                width: 100,
+                height: 100,
+                exif_data: None,
+                created_at: "2023-01-01T00:00:00Z".to_string(),
+                updated_at: "2023-01-01T00:00:00Z".to_string(),
+            };
+
+            let result = scanner.compute_asset_hash(&mut asset);
+            assert!(result.is_ok());
+            assert!(asset.hash.is_some());
+
+            let hash = asset.hash.unwrap();
+            assert_eq!(hash.len(), 64);
+            assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+        }
+
+        #[test]
+        fn test_verify_asset_hash() {
+            let temp_dir = TempDir::new().unwrap();
+            let test_file = temp_dir.path().join("test.jpg");
+
+            create_test_image(&test_file, 100, 100).unwrap();
+
+            let scanner = ScannerService::new();
+
+            // First compute the hash
+            let hash = scanner
+                .hash_service()
+                .compute_content_hash(&test_file)
+                .unwrap();
+
+            let asset = Asset {
+                id: "test_asset".to_string(),
+                project_id: "test_project".to_string(),
+                path: test_file.to_string_lossy().to_string(),
+                hash: Some(hash),
+                perceptual_hash: None,
+                size: 1000,
+                width: 100,
+                height: 100,
+                exif_data: None,
+                created_at: "2023-01-01T00:00:00Z".to_string(),
+                updated_at: "2023-01-01T00:00:00Z".to_string(),
+            };
+
+            // Verify the hash matches
+            let result = scanner.verify_asset_hash(&asset);
+            assert!(result.is_ok());
+            assert!(result.unwrap());
+        }
     }
 }

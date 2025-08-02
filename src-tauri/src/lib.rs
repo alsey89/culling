@@ -26,6 +26,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_dialog::init())
         .manage(ProjectState::new(Mutex::new(None)))
+        .manage(commands::ScanState::new(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             // Project & Scan commands (F-001)
             create_project,
@@ -33,6 +34,10 @@ pub fn run() {
             load_project,
             scan_directory,
             get_scan_progress,
+            // Enhanced scan commands with progress tracking and cancellation
+            scan_project_enhanced,
+            cancel_scan,
+            get_enhanced_scan_progress,
             // Project management commands
             get_project_stats,
             rename_project,
