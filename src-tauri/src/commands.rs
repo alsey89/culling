@@ -5,9 +5,9 @@ use crate::core::{
 };
 use crate::database::{
     connection::get_connection,
-    models::{NewProject, Project as DbProject, ScanStatus},
+    models::{Project as DbProject, ScanStatus},
+    repositories::{AssetRepository, ProjectRepository, VariantGroupRepository},
 };
-use chrono::Utc;
 use diesel::prelude::*;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -15,7 +15,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{mpsc, Mutex};
-use uuid::Uuid;
 
 // Global state for the current project
 pub type ProjectState = Arc<Mutex<Option<Project>>>;
@@ -30,36 +29,32 @@ pub async fn create_project(
     project_name: String,
     state: State<'_, ProjectState>,
 ) -> Result<ProjectConfig, String> {
-    use crate::schema::projects;
-
     // Create the in-memory project first
     let project = Project::new(source_dir.clone(), output_dir.clone(), project_name.clone())
         .map_err(|e| e.to_string())?;
 
     let config = project.config.clone();
 
-    // Generate a unique project ID
-    let project_id = format!("prj_{}", Uuid::new_v4().simple());
-    let now = Utc::now().to_rfc3339();
-
-    // Create database record
-    let new_project = NewProject {
-        id: project_id.clone(),
-        name: project_name,
-        source_path: source_dir,
-        output_path: output_dir,
-        exclude_patterns: "[]".to_string(), // Default empty array
-        file_types: r#"["jpg","jpeg","png","heic","tiff","webp","cr2","nef","arw"]"#.to_string(),
-        scan_status: String::from(ScanStatus::NotStarted),
-        created_at: now.clone(),
-        updated_at: now,
-    };
-
-    // Insert into database
-    let mut conn = get_connection().map_err(|e| e.to_string())?;
-    diesel::insert_into(projects::table)
-        .values(&new_project)
-        .execute(&mut conn)
+    // Create database record using repository
+    let project_repo = ProjectRepository::new();
+    let _db_project = project_repo
+        .create(
+            project_name,
+            source_dir,
+            output_dir,
+            vec![], // Default empty exclude patterns
+            vec![
+                "jpg".to_string(),
+                "jpeg".to_string(),
+                "png".to_string(),
+                "heic".to_string(),
+                "tiff".to_string(),
+                "webp".to_string(),
+                "cr2".to_string(),
+                "nef".to_string(),
+                "arw".to_string(),
+            ],
+        )
         .map_err(|e| format!("Failed to save project: {}", e))?;
 
     // Store the project in global state
@@ -70,31 +65,17 @@ pub async fn create_project(
 }
 
 #[tauri::command]
-pub async fn scan_directory(state: State<'_, ProjectState>) -> Result<(), String> {
-    let mut project_state = state.lock().await;
-
-    if let Some(ref mut project) = project_state.as_mut() {
-        project.scan_images().await.map_err(|e| e.to_string())?;
-        Ok(())
-    } else {
-        Err("No project loaded".to_string())
-    }
-}
-
-#[tauri::command]
-pub async fn scan_project_enhanced(
+pub async fn scan_project(
     project_id: String,
     app_handle: AppHandle,
     scan_state: State<'_, ScanState>,
 ) -> Result<(), String> {
-    use crate::schema::projects::dsl::*;
     use std::path::PathBuf;
 
-    // Get project from database
-    let mut conn = get_connection().map_err(|e| e.to_string())?;
-    let db_project = projects
-        .filter(id.eq(&project_id))
-        .first::<DbProject>(&mut conn)
+    // Get project from database using repository
+    let project_repo = ProjectRepository::new();
+    let db_project = project_repo
+        .find_by_id(&project_id)
         .map_err(|e| format!("Failed to load project: {}", e))?;
 
     // Parse configuration
@@ -104,9 +85,8 @@ pub async fn scan_project_enhanced(
         .unwrap_or_else(|_| vec!["jpg".to_string(), "jpeg".to_string(), "png".to_string()]);
 
     // Update scan status to in progress
-    diesel::update(projects.filter(id.eq(&project_id)))
-        .set(scan_status.eq(String::from(ScanStatus::InProgress)))
-        .execute(&mut conn)
+    project_repo
+        .update_scan_status(&project_id, ScanStatus::InProgress)
         .map_err(|e| format!("Failed to update scan status: {}", e))?;
 
     // Set up progress channel
@@ -159,10 +139,8 @@ pub async fn scan_project_enhanced(
     match scan_result {
         Ok(_) => {
             // Update scan status to completed
-            let mut conn = get_connection().map_err(|e| e.to_string())?;
-            diesel::update(projects.filter(id.eq(&project_id)))
-                .set(scan_status.eq(String::from(ScanStatus::Completed)))
-                .execute(&mut conn)
+            project_repo
+                .update_scan_status(&project_id, ScanStatus::Completed)
                 .map_err(|e| format!("Failed to update scan status: {}", e))?;
 
             // Emit completion event
@@ -172,25 +150,34 @@ pub async fn scan_project_enhanced(
             let project_id_clone = project_id.clone();
             let app_handle_clone = app_handle.clone();
             tokio::spawn(async move {
-                // Get all asset IDs for this project
-                use crate::database::repositories::AssetRepository;
+                // Get all asset IDs for this project using repository
                 let asset_repo = AssetRepository::new();
-                
+
                 if let Ok(assets) = asset_repo.find_by_project_id(&project_id_clone) {
                     let asset_ids: Vec<String> = assets.into_iter().map(|a| a.id).collect();
-                    
+
                     if !asset_ids.is_empty() {
                         let scanner = ScannerService::new();
-                        
-                        log::info!("Starting background thumbnail generation for {} assets", asset_ids.len());
-                        
+
+                        log::info!(
+                            "Starting background thumbnail generation for {} assets",
+                            asset_ids.len()
+                        );
+
                         if let Err(e) = scanner
-                            .generate_thumbnails_background(&project_id_clone, asset_ids, Some(app_handle_clone))
+                            .generate_thumbnails_background(
+                                &project_id_clone,
+                                asset_ids,
+                                Some(app_handle_clone),
+                            )
                             .await
                         {
                             log::error!("Background thumbnail generation failed: {}", e);
                         } else {
-                            log::info!("Background thumbnail generation completed for project {}", project_id_clone);
+                            log::info!(
+                                "Background thumbnail generation completed for project {}",
+                                project_id_clone
+                            );
                         }
                     }
                 }
@@ -200,10 +187,8 @@ pub async fn scan_project_enhanced(
         }
         Err(crate::core::scanner::ScanError::Cancelled) => {
             // Update scan status to cancelled
-            let mut conn = get_connection().map_err(|e| e.to_string())?;
-            diesel::update(projects.filter(id.eq(&project_id)))
-                .set(scan_status.eq(String::from(ScanStatus::Cancelled)))
-                .execute(&mut conn)
+            project_repo
+                .update_scan_status(&project_id, ScanStatus::Cancelled)
                 .map_err(|e| format!("Failed to update scan status: {}", e))?;
 
             // Emit cancellation event
@@ -213,10 +198,8 @@ pub async fn scan_project_enhanced(
         }
         Err(e) => {
             // Update scan status to failed
-            let mut conn = get_connection().map_err(|e| e.to_string())?;
-            diesel::update(projects.filter(id.eq(&project_id)))
-                .set(scan_status.eq(String::from(ScanStatus::Failed(e.to_string()))))
-                .execute(&mut conn)
+            project_repo
+                .update_scan_status(&project_id, ScanStatus::Failed(e.to_string()))
                 .map_err(|e| format!("Failed to update scan status: {}", e))?;
 
             // Emit error event
@@ -240,18 +223,10 @@ async fn scan_with_realtime_updates(
         .scan_paths(project_id, paths, file_types, exclude_patterns)
         .await?;
 
-    // Insert all assets to database after scanning is complete
+    // Insert all assets to database after scanning is complete using repository
     use crate::database::models::NewAsset;
-    use crate::schema::assets;
-    use diesel::prelude::*;
 
-    let mut conn = get_connection().map_err(|e| {
-        crate::core::scanner::ScanError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Database connection failed: {}", e),
-        ))
-    })?;
-
+    let asset_repo = AssetRepository::new();
     let new_assets: Vec<NewAsset> = assets
         .iter()
         .map(|asset| NewAsset {
@@ -270,15 +245,12 @@ async fn scan_with_realtime_updates(
         })
         .collect();
 
-    diesel::insert_into(assets::table)
-        .values(&new_assets)
-        .execute(&mut conn)
-        .map_err(|e| {
-            crate::core::scanner::ScanError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to insert assets: {}", e),
-            ))
-        })?;
+    asset_repo.create_batch(new_assets).map_err(|e| {
+        crate::core::scanner::ScanError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("Failed to insert assets: {}", e),
+        ))
+    })?;
 
     Ok(())
 }
@@ -393,17 +365,10 @@ pub async fn list_directory_images(path: String) -> Result<Vec<String>, String> 
 
 #[tauri::command]
 pub async fn get_recent_projects() -> Result<Vec<DbProject>, String> {
-    use crate::schema::projects::dsl::*;
-
-    let mut conn = get_connection().map_err(|e| e.to_string())?;
-
-    let recent_projects = projects
-        .order(created_at.desc())
-        .limit(10)
-        .load::<DbProject>(&mut conn)
-        .map_err(|e| format!("Failed to load recent projects: {}", e))?;
-
-    Ok(recent_projects)
+    let project_repo = ProjectRepository::new();
+    project_repo
+        .find_all()
+        .map_err(|e| format!("Failed to load recent projects: {}", e))
 }
 
 #[tauri::command]
@@ -411,13 +376,9 @@ pub async fn load_project(
     project_id: String,
     state: State<'_, ProjectState>,
 ) -> Result<DbProject, String> {
-    use crate::schema::projects::dsl::*;
-
-    let mut conn = get_connection().map_err(|e| e.to_string())?;
-
-    let db_project = projects
-        .filter(id.eq(&project_id))
-        .first::<DbProject>(&mut conn)
+    let project_repo = ProjectRepository::new();
+    let db_project = project_repo
+        .find_by_id(&project_id)
         .map_err(|e| format!("Failed to load project: {}", e))?;
 
     // Parse the exclude patterns and file types from JSON
@@ -443,18 +404,18 @@ pub async fn load_project(
 
 #[tauri::command]
 pub async fn get_project_stats(project_id: String) -> Result<ProjectStats, String> {
-    use crate::schema::{assets, decisions, variant_groups};
+    let asset_repo = AssetRepository::new();
+    let variant_group_repo = VariantGroupRepository::new();
 
-    let mut conn = get_connection().map_err(|e| e.to_string())?;
-
-    // Get asset count
-    let asset_count: i64 = assets::table
-        .filter(assets::project_id.eq(&project_id))
-        .count()
-        .get_result(&mut conn)
+    // Get asset count using repository
+    let asset_count = asset_repo
+        .count_by_project_id(&project_id)
         .map_err(|e| format!("Failed to count assets: {}", e))?;
 
-    // Get decision counts
+    // Get decision counts - using the existing logic since we don't have specific repository methods
+    use crate::schema::{assets, decisions};
+    let mut conn = get_connection().map_err(|e| e.to_string())?;
+
     let keep_count: i64 = decisions::table
         .filter(decisions::state.eq("keep"))
         .inner_join(assets::table.on(assets::id.eq(decisions::asset_id)))
@@ -471,20 +432,15 @@ pub async fn get_project_stats(project_id: String) -> Result<ProjectStats, Strin
         .get_result(&mut conn)
         .unwrap_or(0);
 
-    // Get group counts
-    let duplicate_groups: i64 = variant_groups::table
-        .filter(variant_groups::project_id.eq(&project_id))
-        .filter(variant_groups::group_type.eq("exact"))
-        .count()
-        .get_result(&mut conn)
-        .unwrap_or(0);
+    // Get group counts using repository
+    use crate::database::models::GroupType;
+    let duplicate_groups = variant_group_repo
+        .count_by_type(&project_id, GroupType::Exact)
+        .map_err(|e| format!("Failed to count duplicate groups: {}", e))?;
 
-    let similar_groups: i64 = variant_groups::table
-        .filter(variant_groups::project_id.eq(&project_id))
-        .filter(variant_groups::group_type.eq("similar"))
-        .count()
-        .get_result(&mut conn)
-        .unwrap_or(0);
+    let similar_groups = variant_group_repo
+        .count_by_type(&project_id, GroupType::Similar)
+        .map_err(|e| format!("Failed to count similar groups: {}", e))?;
 
     Ok(ProjectStats {
         total_assets: asset_count,
@@ -498,15 +454,9 @@ pub async fn get_project_stats(project_id: String) -> Result<ProjectStats, Strin
 
 #[tauri::command]
 pub async fn rename_project(project_id: String, new_name: String) -> Result<(), String> {
-    use crate::schema::projects::dsl::*;
-
-    let mut conn = get_connection().map_err(|e| e.to_string())?;
-
-    let now = Utc::now().to_rfc3339();
-
-    diesel::update(projects.filter(id.eq(&project_id)))
-        .set((name.eq(&new_name), updated_at.eq(&now)))
-        .execute(&mut conn)
+    let project_repo = ProjectRepository::new();
+    project_repo
+        .update(&project_id, Some(new_name), None, None, None, None)
         .map_err(|e| format!("Failed to rename project: {}", e))?;
 
     Ok(())
@@ -514,7 +464,11 @@ pub async fn rename_project(project_id: String, new_name: String) -> Result<(), 
 
 #[tauri::command]
 pub async fn delete_project(project_id: String) -> Result<(), String> {
-    use crate::schema::{asset_groups, assets, decisions, projects, variant_groups};
+    // We need to maintain the deletion order for foreign key constraints
+    // This is complex enough that it might be worth keeping some direct DB operations
+    // or creating a specific method in ProjectRepository for cascading deletes
+
+    use crate::schema::{asset_groups, assets, decisions, variant_groups};
 
     let mut conn = get_connection().map_err(|e| e.to_string())?;
 
@@ -555,9 +509,10 @@ pub async fn delete_project(project_id: String) -> Result<(), String> {
         .execute(&mut conn)
         .map_err(|e| format!("Failed to delete assets: {}", e))?;
 
-    // Finally delete the project
-    diesel::delete(projects::table.filter(projects::id.eq(&project_id)))
-        .execute(&mut conn)
+    // Finally delete the project using repository
+    let project_repo = ProjectRepository::new();
+    project_repo
+        .delete(&project_id)
         .map_err(|e| format!("Failed to delete project: {}", e))?;
 
     Ok(())
@@ -565,56 +520,31 @@ pub async fn delete_project(project_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn duplicate_project(project_id: String, new_name: String) -> Result<DbProject, String> {
-    use crate::schema::projects::dsl::*;
-
-    let mut conn = get_connection().map_err(|e| e.to_string())?;
+    let project_repo = ProjectRepository::new();
 
     // Get the original project
-    let original_project = projects
-        .filter(id.eq(&project_id))
-        .first::<DbProject>(&mut conn)
+    let original_project = project_repo
+        .find_by_id(&project_id)
         .map_err(|e| format!("Failed to find project: {}", e))?;
 
-    // Create new project with duplicated settings
-    let new_project_id = format!("prj_{}", Uuid::new_v4().simple());
-    let now = Utc::now().to_rfc3339();
+    // Parse the configuration from the original project
+    let exclude_patterns: Vec<String> =
+        serde_json::from_str(&original_project.exclude_patterns).unwrap_or_default();
+    let file_types: Vec<String> =
+        serde_json::from_str(&original_project.file_types).unwrap_or_default();
 
-    let new_project = NewProject {
-        id: new_project_id.clone(),
-        name: new_name,
-        source_path: original_project.source_path,
-        output_path: original_project.output_path,
-        exclude_patterns: original_project.exclude_patterns,
-        file_types: original_project.file_types,
-        scan_status: String::from(ScanStatus::NotStarted),
-        created_at: now.clone(),
-        updated_at: now,
-    };
-
-    diesel::insert_into(projects)
-        .values(&new_project)
-        .execute(&mut conn)
+    // Create new project with duplicated settings using repository
+    let duplicated_project = project_repo
+        .create(
+            new_name,
+            original_project.source_path,
+            original_project.output_path,
+            exclude_patterns,
+            file_types,
+        )
         .map_err(|e| format!("Failed to create duplicate project: {}", e))?;
 
-    // Return the new project
-    let duplicated_project = projects
-        .filter(id.eq(&new_project_id))
-        .first::<DbProject>(&mut conn)
-        .map_err(|e| format!("Failed to load duplicated project: {}", e))?;
-
     Ok(duplicated_project)
-}
-
-#[tauri::command]
-pub async fn get_project_assets(
-    project_id: String,
-) -> Result<Vec<crate::database::models::Asset>, String> {
-    use crate::database::repositories::AssetRepository;
-
-    let asset_repo = AssetRepository::new();
-    asset_repo
-        .find_by_project_id(&project_id)
-        .map_err(|e| format!("Failed to load assets: {}", e))
 }
 
 #[tauri::command]
@@ -623,8 +553,6 @@ pub async fn get_project_assets_paginated(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<crate::database::models::Asset>, String> {
-    use crate::database::repositories::AssetRepository;
-
     let asset_repo = AssetRepository::new();
     asset_repo
         .find_by_project_id_paginated(&project_id, limit, offset)
@@ -633,8 +561,6 @@ pub async fn get_project_assets_paginated(
 
 #[tauri::command]
 pub async fn get_asset_count(project_id: String) -> Result<i64, String> {
-    use crate::database::repositories::AssetRepository;
-
     let asset_repo = AssetRepository::new();
     asset_repo
         .count_by_project_id(&project_id)
@@ -673,13 +599,9 @@ pub async fn get_thumbnail_data(project_id: String, asset_id: String) -> Result<
 
 #[tauri::command]
 pub async fn get_project_cache_info(project_id: String) -> Result<ProjectCacheInfo, String> {
-    use crate::schema::projects::dsl::*;
-
-    let mut conn = get_connection().map_err(|e| e.to_string())?;
-
-    let project = projects
-        .filter(id.eq(&project_id))
-        .first::<DbProject>(&mut conn)
+    let project_repo = ProjectRepository::new();
+    let project = project_repo
+        .find_by_id(&project_id)
         .map_err(|e| format!("Failed to load project: {}", e))?;
 
     // Determine cache directory location
@@ -741,25 +663,26 @@ pub async fn generate_thumbnails_background(
     project_id: String,
     app_handle: AppHandle,
 ) -> Result<(), String> {
-    // Get all asset IDs for this project
-    use crate::database::repositories::AssetRepository;
-    
+    // Get all asset IDs for this project using repository
     let asset_repo = AssetRepository::new();
     let assets = asset_repo
         .find_by_project_id(&project_id)
         .map_err(|e| format!("Failed to load assets: {}", e))?;
-    
+
     let asset_ids: Vec<String> = assets.into_iter().map(|a| a.id).collect();
-    
+
     if asset_ids.is_empty() {
         return Ok(());
     }
-    
+
     // Start background thumbnail generation
     let scanner = ScannerService::new();
-    
-    log::info!("Starting manual thumbnail generation for {} assets", asset_ids.len());
-    
+
+    log::info!(
+        "Starting manual thumbnail generation for {} assets",
+        asset_ids.len()
+    );
+
     // Spawn background task
     let project_id_clone = project_id.clone();
     let app_handle_clone = app_handle.clone();
@@ -770,10 +693,13 @@ pub async fn generate_thumbnails_background(
         {
             log::error!("Manual thumbnail generation failed: {}", e);
         } else {
-            log::info!("Manual thumbnail generation completed for project {}", project_id_clone);
+            log::info!(
+                "Manual thumbnail generation completed for project {}",
+                project_id_clone
+            );
         }
     });
-    
+
     Ok(())
 }
 
@@ -795,32 +721,19 @@ mod tests {
         let output_path = temp_output.path().to_string_lossy().to_string();
         let project_name = "Test Project".to_string();
 
-        // Test direct database operations
-        use crate::database::models::NewProject;
-        use crate::schema::projects;
-        use diesel::prelude::*;
-
-        let project_id = format!("prj_{}", Uuid::new_v4().simple());
-        let now = Utc::now().to_rfc3339();
-
-        let new_project = NewProject {
-            id: project_id.clone(),
-            name: project_name.clone(),
-            source_path: source_path.clone(),
-            output_path: output_path.clone(),
-            exclude_patterns: "[]".to_string(),
-            file_types: r#"["jpg","jpeg","png"]"#.to_string(),
-            scan_status: String::from(ScanStatus::NotStarted),
-            created_at: now.clone(),
-            updated_at: now,
-        };
-
-        // Insert project into database
-        let mut conn = get_connection().unwrap();
-        diesel::insert_into(projects::table)
-            .values(&new_project)
-            .execute(&mut conn)
+        // Test using repository operations instead of direct database calls
+        let project_repo = ProjectRepository::new();
+        let db_project = project_repo
+            .create(
+                project_name.clone(),
+                source_path.clone(),
+                output_path.clone(),
+                vec![], // empty exclude patterns
+                vec!["jpg".to_string(), "jpeg".to_string(), "png".to_string()],
+            )
             .unwrap();
+
+        let project_id = db_project.id;
 
         // Test loading recent projects
         let recent_projects = get_recent_projects().await.unwrap();

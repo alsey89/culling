@@ -32,10 +32,8 @@ pub fn run() {
             create_project,
             get_recent_projects,
             load_project,
-            scan_directory,
             get_scan_progress,
-            // Enhanced scan commands with progress tracking and cancellation
-            scan_project_enhanced,
+            scan_project,
             cancel_scan,
             get_enhanced_scan_progress,
             // Project management commands
@@ -44,7 +42,6 @@ pub fn run() {
             delete_project,
             duplicate_project,
             // Asset commands
-            get_project_assets,
             get_project_assets_paginated,
             get_asset_count,
             // Thumbnail commands

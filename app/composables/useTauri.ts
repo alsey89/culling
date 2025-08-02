@@ -13,10 +13,6 @@ export const useTauri = () => {
   };
 
   // Asset commands
-  const getProjectAssets = async (projectId: string): Promise<Asset[]> => {
-    return await invoke("get_project_assets", { projectId });
-  };
-
   const getProjectAssetsPaginated = async (
     projectId: string,
     limit: number,
@@ -35,7 +31,7 @@ export const useTauri = () => {
 
   // Scan commands
   const scanProject = async (projectId: string): Promise<void> => {
-    return await invoke("scan_project_enhanced", { projectId });
+    return await invoke("scan_project", { projectId });
   };
 
   const cancelScan = async (): Promise<void> => {
@@ -99,7 +95,6 @@ export const useTauri = () => {
     getRecentProjects,
 
     // Asset commands
-    getProjectAssets,
     getProjectAssetsPaginated,
     getAssetCount,
 
