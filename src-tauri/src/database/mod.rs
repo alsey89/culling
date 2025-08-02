@@ -1,5 +1,6 @@
 pub mod connection;
 pub mod models;
+pub mod repositories;
 
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool, PooledConnection};

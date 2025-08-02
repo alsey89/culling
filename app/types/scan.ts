@@ -1,20 +1,11 @@
 // Enhanced scan progress tracking types for frontend
 
-export interface ScanProgress {
-  files_processed: number;
-  total_files: number;
-  current_file: string;
-  estimated_time_remaining?: number; // seconds
-  phase: ScanPhase;
-}
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import type { ScanProgress } from "./database";
 
-export enum ScanPhase {
-  Discovery = "Discovery",
-  Processing = "Processing",
-  ThumbnailGeneration = "ThumbnailGeneration",
-  HashingAndExif = "HashingAndExif",
-  Complete = "Complete",
-}
+// Re-export types from database.ts for consistency
+export type { ScanProgress, ThumbnailProgress, ScanPhase } from "./database";
 
 export interface ScanState {
   isScanning: boolean;
@@ -38,8 +29,8 @@ export const useScanProgress = () => {
       scanState.value.canCancel = true;
       scanState.value.error = null;
 
-      // Start the enhanced scan
-      await invoke("scan_project_enhanced", { projectId });
+      // Start the scan
+      await invoke("start_scan", { projectId });
     } catch (error) {
       scanState.value.error = error as string;
     } finally {
