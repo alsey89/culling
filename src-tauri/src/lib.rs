@@ -51,6 +51,7 @@ pub fn run() {
             get_thumbnail_path,
             get_thumbnail_data,
             get_project_cache_info,
+            generate_thumbnails_background,
             // Image processing commands
             get_image_metadata,
             compute_image_hash,

@@ -61,6 +61,12 @@ export const useTauri = () => {
     });
   };
 
+  const onQuickScanComplete = (callback: (projectId: string) => void) => {
+    return listen<string>("quick-scan-complete", (event) => {
+      callback(event.payload);
+    });
+  };
+
   // Thumbnail commands
   const getThumbnailPath = async (
     projectId: string,
@@ -105,6 +111,7 @@ export const useTauri = () => {
     onScanProgress,
     onScanComplete,
     onScanError,
+    onQuickScanComplete,
 
     // Thumbnail commands
     getThumbnailPath,

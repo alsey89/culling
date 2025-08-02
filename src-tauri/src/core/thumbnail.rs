@@ -641,6 +641,7 @@ mod tests {
             id: id.to_string(),
             project_id: "test_project".to_string(),
             path: path.to_string(),
+            thumbnail_path: None,
             hash: None,
             perceptual_hash: None,
             size: 1000,

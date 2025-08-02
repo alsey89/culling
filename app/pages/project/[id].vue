@@ -105,26 +105,91 @@
             </div>
 
             <!-- Scan in progress state -->
-            <div v-else-if="project?.scan_status === 'in_progress' || isScanning" class="text-center py-12">
-                <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-                <h3 class="text-lg font-semibold text-gray-900 mb-2">Scanning Images</h3>
-                <div v-if="scanProgress" class="space-y-2">
-                    <p class="text-gray-600">
-                        {{ scanProgress.current_file ? getFileName(scanProgress.current_file) : 'Processing...' }}
-                    </p>
-                    <div class="w-64 mx-auto bg-gray-200 rounded-full h-2">
-                        <div class="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                            :style="{ width: `${(scanProgress.files_processed / Math.max(scanProgress.total_files, 1)) * 100}%` }">
+            <div v-else-if="project?.scan_status === 'in_progress' || isScanning" class="space-y-6">
+                <!-- Scan status header -->
+                <div class="text-center py-8">
+                    <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                    <h3 class="text-lg font-semibold text-gray-900 mb-2">
+                        {{ getScanStatusTitle() }}
+                    </h3>
+                    <div v-if="scanProgress" class="space-y-2">
+                        <p class="text-gray-600">
+                            {{ scanProgress.current_file ? getFileName(scanProgress.current_file) : 'Processing...' }}
+                        </p>
+                        <div class="w-64 mx-auto bg-gray-200 rounded-full h-2">
+                            <div class="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                                :style="{ width: getScanProgressPercentage() + '%' }">
+                            </div>
+                        </div>
+                        <p class="text-sm text-gray-500">
+                            {{ getScanProgressText() }}
+                        </p>
+                    </div>
+                    <Button @click="cancelScan" variant="outline" class="mt-4">
+                        Cancel Scan
+                    </Button>
+                </div>
+
+                <!-- Show discovered images during scan (if Quick Scan is complete) -->
+                <div v-if="scanProgress?.quick_scan_complete && assets.length > 0" class="space-y-4">
+                    <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                        <div class="flex items-center gap-2 text-blue-800">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                            <span class="font-medium">{{ assets.length }} images discovered</span>
+                            <span class="text-sm text-blue-600">
+                                • Processing metadata and thumbnails in background
+                            </span>
                         </div>
                     </div>
-                    <p class="text-sm text-gray-500">
-                        {{ scanProgress.files_processed }} of {{ scanProgress.total_files }} files
-                        <span v-if="scanProgress.phase"> • {{ scanProgress.phase }}</span>
-                    </p>
+
+                    <!-- Early preview grid with original images -->
+                    <div class="grid gap-4" :class="gridClasses">
+                        <div v-for="asset in assets" :key="asset.id"
+                            class="group relative bg-white rounded-lg shadow-sm border hover:shadow-md transition-shadow cursor-pointer"
+                            @click="openImageModal(asset)">
+                            <!-- Original image with size constraints -->
+                            <div class="aspect-square bg-gray-100 rounded-t-lg overflow-hidden">
+                                <img :src="getImageUrl(asset)" :alt="getFileName(asset.path)"
+                                    class="w-full h-full object-cover transition-opacity duration-200"
+                                    :class="{ 'opacity-75': !asset.thumbnail_path }" @error="handleImageError"
+                                    loading="lazy" />
+
+                                <!-- Loading indicator for images without thumbnails -->
+                                <div v-if="!asset.thumbnail_path"
+                                    class="absolute inset-0 bg-gray-100 flex items-center justify-center">
+                                    <div class="text-xs text-gray-500 text-center p-2">
+                                        <div class="animate-pulse w-4 h-4 bg-gray-300 rounded mx-auto mb-1"></div>
+                                        Processing...
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Asset metadata -->
+                            <div class="p-3 space-y-1">
+                                <h3 class="font-medium text-sm text-gray-900 truncate" :title="getFileName(asset.path)">
+                                    {{ getFileName(asset.path) }}
+                                </h3>
+                                <div class="text-xs text-gray-600 space-y-0.5">
+                                    <div class="flex justify-between">
+                                        <span>{{ asset.width || '?' }} × {{ asset.height || '?' }}</span>
+                                        <span>{{ asset.size ? formatFileSize(asset.size) : '...' }}</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Hover overlay -->
+                            <div
+                                class="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-all duration-200 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100">
+                                <Button size="sm" variant="secondary" class="bg-white/90 hover:bg-white">
+                                    View Full Size
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <Button @click="cancelScan" variant="outline" class="mt-4">
-                    Cancel Scan
-                </Button>
             </div>
 
             <!-- Thumbnail grid - main content -->
@@ -145,7 +210,16 @@
                         </div>
                     </div>
 
-                    <div class="flex items-center gap-2">
+                    <div class="flex items-center gap-3">
+                        <!-- Image quality toggle -->
+                        <div class="flex items-center gap-2">
+                            <label class="text-sm text-gray-600">Quality:</label>
+                            <Button @click="useOptimizedThumbnails = !useOptimizedThumbnails"
+                                :variant="useOptimizedThumbnails ? 'default' : 'outline'" size="sm">
+                                {{ useOptimizedThumbnails ? 'Thumbnails' : 'Original' }}
+                            </Button>
+                        </div>
+
                         <Button @click="refreshAssets" variant="outline" size="sm" :disabled="isRefreshing">
                             {{ isRefreshing ? 'Refreshing...' : 'Refresh' }}
                         </Button>
@@ -159,7 +233,7 @@
                         @click="openImageModal(asset)">
                         <!-- Thumbnail image -->
                         <div class="aspect-square bg-gray-100 rounded-t-lg overflow-hidden">
-                            <img :src="getThumbnailUrl(asset.id)" :alt="getFileName(asset.path)"
+                            <img :src="getImageUrl(asset)" :alt="getFileName(asset.path)"
                                 class="w-full h-full object-cover" @error="handleImageError" loading="lazy" />
                         </div>
 
@@ -269,6 +343,7 @@ const {
     onScanProgress,
     onScanComplete,
     onScanError,
+    onQuickScanComplete,
     formatFileSize,
     getFileName,
 } = useTauri()
@@ -285,6 +360,7 @@ const error = ref<string | null>(null)
 const scanProgress = ref<ScanProgress | null>(null)
 const totalAssets = ref(0)
 const gridSize = ref<'small' | 'medium' | 'large'>('medium')
+const useOptimizedThumbnails = ref(false) // Toggle between original images and thumbnails
 
 // Pagination state
 const currentPage = ref(0)
@@ -307,6 +383,7 @@ const gridClasses = computed(() => {
 let unlistenProgress: (() => void) | null = null
 let unlistenComplete: (() => void) | null = null
 let unlistenError: (() => void) | null = null
+let unlistenQuickScanComplete: (() => void) | null = null
 
 // Methods
 const loadProjectData = async () => {
@@ -448,9 +525,8 @@ const getThumbnailUrl = (assetId: string): string => {
     const asset = assets.value.find(a => a.id === assetId)
     if (!asset) return ''
 
-    // Use thumbnail_path if available, otherwise fallback to original path
-    const imagePath = asset.thumbnail_path || asset.path
-    return convertFileSrc(imagePath)
+    // Use the enhanced getImageUrl method instead
+    return getImageUrl(asset)
 }
 
 const getOriginalImageUrl = (assetId: string): string => {
@@ -473,6 +549,62 @@ const formatDate = (dateString: string | undefined): string => {
     } catch {
         return 'Unknown date'
     }
+}
+
+// New methods for improved scan progress display
+const getScanStatusTitle = (): string => {
+    if (!scanProgress.value) return 'Scanning Images'
+
+    switch (scanProgress.value.phase) {
+        case 'QuickScan':
+            return 'Discovering Images'
+        case 'BackgroundMetadata':
+            return 'Processing Metadata'
+        case 'BackgroundThumbnails':
+            return 'Generating Thumbnails'
+        case 'BackgroundHashing':
+            return 'Computing Image Hashes'
+        case 'Complete':
+            return 'Scan Complete'
+        default:
+            return 'Scanning Images'
+    }
+}
+
+const getScanProgressPercentage = (): number => {
+    if (!scanProgress.value) return 0
+
+    const { files_processed, total_files } = scanProgress.value
+    return Math.round((files_processed / Math.max(total_files, 1)) * 100)
+}
+
+const getScanProgressText = (): string => {
+    if (!scanProgress.value) return ''
+
+    const { files_processed, total_files, phase, bytes_processed } = scanProgress.value
+    let text = `${files_processed} of ${total_files} files`
+
+    if (phase) {
+        text += ` • ${phase}`
+    }
+
+    if (bytes_processed && bytes_processed > 0) {
+        text += ` • ${formatFileSize(bytes_processed)} processed`
+    }
+
+    return text
+}
+
+// Enhanced image URL method that supports progressive loading
+const getImageUrl = (asset: Asset): string => {
+    // For now, prioritize original images for immediate display
+    // Later we can add logic to switch to thumbnails when available
+    if (asset.thumbnail_path && useOptimizedThumbnails.value) {
+        return convertFileSrc(asset.thumbnail_path)
+    }
+
+    // For original images, we'll rely on CSS and lazy loading to manage performance
+    return convertFileSrc(asset.path)
 }
 
 const getExifData = (asset: Asset): ExifData | null => {
@@ -504,8 +636,29 @@ const handleKeydown = (event: KeyboardEvent) => {
 // Lifecycle hooks
 onMounted(async () => {
     // Set up event listeners for scan progress
-    unlistenProgress = await onScanProgress((progress) => {
+    unlistenProgress = await onScanProgress(async (progress) => {
         scanProgress.value = progress
+
+        // Load assets immediately when Quick Scan completes
+        if (progress.quick_scan_complete && assets.value.length === 0) {
+            try {
+                await loadAssets()
+            } catch (err) {
+                console.error('Failed to load assets after quick scan:', err)
+            }
+        }
+
+        // Refresh assets periodically during background processing phases
+        if (progress.phase && ['BackgroundMetadata', 'BackgroundThumbnails'].includes(progress.phase)) {
+            // Refresh every 50 files processed to show updated metadata/thumbnails
+            if (progress.files_processed % 50 === 0) {
+                try {
+                    await refreshAssets()
+                } catch (err) {
+                    console.error('Failed to refresh assets during background processing:', err)
+                }
+            }
+        }
     })
 
     unlistenComplete = await onScanComplete((completedProjectId) => {
@@ -523,6 +676,17 @@ onMounted(async () => {
         error.value = errorMessage
     })
 
+    unlistenQuickScanComplete = await onQuickScanComplete(async (completedProjectId) => {
+        if (completedProjectId === projectId.value) {
+            console.log('Quick scan complete, loading assets immediately...')
+            try {
+                await loadAssets()
+            } catch (err) {
+                console.error('Failed to load assets after quick scan complete event:', err)
+            }
+        }
+    })
+
     // Add keyboard event listener
     document.addEventListener('keydown', handleKeydown)
 
@@ -535,6 +699,7 @@ onUnmounted(() => {
     if (unlistenProgress) unlistenProgress()
     if (unlistenComplete) unlistenComplete()
     if (unlistenError) unlistenError()
+    if (unlistenQuickScanComplete) unlistenQuickScanComplete()
 
     document.removeEventListener('keydown', handleKeydown)
 })
@@ -544,3 +709,33 @@ useHead({
     title: computed(() => project.value ? `${project.value.name} - Cullrs` : 'Project - Cullrs')
 })
 </script>
+
+<style scoped>
+/* Optimize image loading performance */
+img {
+    /* Ensure smooth loading transitions */
+    transition: opacity 0.2s ease-in-out;
+}
+
+/* Constrain original image dimensions to prevent memory issues */
+.aspect-square img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: cover;
+    /* Hardware acceleration for better performance */
+    will-change: transform;
+    transform: translateZ(0);
+}
+
+/* Smooth hover effects */
+.group:hover img {
+    transform: scale(1.02);
+    transition: transform 0.2s ease-in-out;
+}
+
+/* Loading state styling */
+.opacity-75 {
+    opacity: 0.75;
+    filter: brightness(0.95);
+}
+</style>

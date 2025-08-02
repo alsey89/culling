@@ -1,7 +1,7 @@
 use crate::core::{
     image::{ImageHash, ImageMetadata},
     project::{Project, ProjectConfig, ScanProgress},
-    scanner::{ScanProgress as EnhancedScanProgress, ScannerService, ScanPhase},
+    scanner::{ScanPhase, ScanProgress as EnhancedScanProgress, ScannerService},
 };
 use crate::database::{
     connection::get_connection,
@@ -167,6 +167,34 @@ pub async fn scan_project_enhanced(
 
             // Emit completion event
             let _ = app_handle.emit("scan-complete", &project_id);
+
+            // Start background thumbnail generation in a separate task
+            let project_id_clone = project_id.clone();
+            let app_handle_clone = app_handle.clone();
+            tokio::spawn(async move {
+                // Get all asset IDs for this project
+                use crate::database::repositories::AssetRepository;
+                let asset_repo = AssetRepository::new();
+                
+                if let Ok(assets) = asset_repo.find_by_project_id(&project_id_clone) {
+                    let asset_ids: Vec<String> = assets.into_iter().map(|a| a.id).collect();
+                    
+                    if !asset_ids.is_empty() {
+                        let scanner = ScannerService::new();
+                        
+                        log::info!("Starting background thumbnail generation for {} assets", asset_ids.len());
+                        
+                        if let Err(e) = scanner
+                            .generate_thumbnails_background(&project_id_clone, asset_ids, Some(app_handle_clone))
+                            .await
+                        {
+                            log::error!("Background thumbnail generation failed: {}", e);
+                        } else {
+                            log::info!("Background thumbnail generation completed for project {}", project_id_clone);
+                        }
+                    }
+                }
+            });
 
             Ok(())
         }
@@ -707,6 +735,48 @@ pub struct ProjectCacheInfo {
     pub thumbnail_count: usize,
     pub cache_exists: bool,
 }
+
+#[tauri::command]
+pub async fn generate_thumbnails_background(
+    project_id: String,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    // Get all asset IDs for this project
+    use crate::database::repositories::AssetRepository;
+    
+    let asset_repo = AssetRepository::new();
+    let assets = asset_repo
+        .find_by_project_id(&project_id)
+        .map_err(|e| format!("Failed to load assets: {}", e))?;
+    
+    let asset_ids: Vec<String> = assets.into_iter().map(|a| a.id).collect();
+    
+    if asset_ids.is_empty() {
+        return Ok(());
+    }
+    
+    // Start background thumbnail generation
+    let scanner = ScannerService::new();
+    
+    log::info!("Starting manual thumbnail generation for {} assets", asset_ids.len());
+    
+    // Spawn background task
+    let project_id_clone = project_id.clone();
+    let app_handle_clone = app_handle.clone();
+    tokio::spawn(async move {
+        if let Err(e) = scanner
+            .generate_thumbnails_background(&project_id_clone, asset_ids, Some(app_handle_clone))
+            .await
+        {
+            log::error!("Manual thumbnail generation failed: {}", e);
+        } else {
+            log::info!("Manual thumbnail generation completed for project {}", project_id_clone);
+        }
+    });
+    
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

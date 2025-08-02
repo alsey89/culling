@@ -11,6 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use tauri::Emitter;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -59,10 +60,10 @@ pub struct ScanProgress {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ScanPhase {
-    QuickScan,           // Phase 1: Rapid file indexing with minimal metadata
-    BackgroundMetadata,  // Phase 2: Extract full EXIF metadata
+    QuickScan,            // Phase 1: Rapid file indexing with minimal metadata
+    BackgroundMetadata,   // Phase 2: Extract full EXIF metadata
     BackgroundThumbnails, // Phase 2: Generate thumbnails
-    BackgroundHashing,   // Phase 2: Compute content hashes
+    BackgroundHashing,    // Phase 2: Compute content hashes
     Complete,
 }
 
@@ -198,7 +199,8 @@ impl ScannerService {
         });
 
         // PHASE 2: Background Processing - Extract full metadata in batches
-        self.background_process_assets(project_id, &mut assets).await?;
+        self.background_process_assets(project_id, &mut assets)
+            .await?;
 
         // Final completion status
         self.send_progress(ScanProgress {
@@ -286,9 +288,9 @@ impl ScannerService {
             hash: None,            // Will be computed during background processing
             perceptual_hash: None, // Will be computed during background processing
             size: file_size,
-            width: 0,              // Will be set during background processing
-            height: 0,             // Will be set during background processing
-            exif_data: None,       // Will be extracted during background processing
+            width: 0,        // Will be set during background processing
+            height: 0,       // Will be set during background processing
+            exif_data: None, // Will be extracted during background processing
             created_at: now.clone(),
             updated_at: now,
         })
@@ -310,7 +312,8 @@ impl ScannerService {
         }
 
         // Step 2: Generate thumbnails in batches
-        self.background_generate_thumbnails(project_id, assets).await?;
+        self.background_generate_thumbnails(project_id, assets)
+            .await?;
 
         if self.cancellation_token.load(Ordering::Relaxed) {
             return Err(ScanError::Cancelled);
@@ -349,7 +352,7 @@ impl ScannerService {
                 .par_iter_mut()
                 .map(|asset| {
                     let file_path = Path::new(&asset.path);
-                    
+
                     // Extract dimensions
                     if let Ok((width, height)) = self.get_image_dimensions(file_path) {
                         asset.width = width as i32;
@@ -358,7 +361,8 @@ impl ScannerService {
 
                     // Extract EXIF data
                     if let Some(exif_data) = self.extract_basic_exif(file_path) {
-                        asset.exif_data = Some(serde_json::to_string(&exif_data).unwrap_or_default());
+                        asset.exif_data =
+                            Some(serde_json::to_string(&exif_data).unwrap_or_default());
                     }
 
                     asset.updated_at = Utc::now().to_rfc3339();
@@ -378,7 +382,10 @@ impl ScannerService {
                         self.send_progress(ScanProgress {
                             files_processed: current_count,
                             total_files: total_assets,
-                            current_file: format!("Processing metadata: {}", file_path.file_name().unwrap_or_default().to_string_lossy()),
+                            current_file: format!(
+                                "Processing metadata: {}",
+                                file_path.file_name().unwrap_or_default().to_string_lossy()
+                            ),
                             estimated_time_remaining: estimated_remaining,
                             phase: ScanPhase::BackgroundMetadata,
                             bytes_processed: None,
@@ -399,67 +406,51 @@ impl ScannerService {
         Ok(())
     }
 
-    /// Background thumbnail generation
-    async fn background_generate_thumbnails(&self, project_id: &str, assets: &mut [Asset]) -> Result<(), ScanError> {
+    /// Background thumbnail generation - non-blocking approach
+    async fn background_generate_thumbnails(
+        &self,
+        project_id: &str,
+        assets: &mut [Asset],
+    ) -> Result<(), ScanError> {
         let total_assets = assets.len();
-        let processed_count = Arc::new(AtomicUsize::new(0));
-        let start_time = std::time::Instant::now();
 
         self.send_progress(ScanProgress {
             files_processed: 0,
             total_files: total_assets,
-            current_file: "Generating thumbnails...".to_string(),
+            current_file: "Setting up thumbnail paths...".to_string(),
             estimated_time_remaining: None,
             phase: ScanPhase::BackgroundThumbnails,
             bytes_processed: Some(0),
             quick_scan_complete: true,
         });
 
-        // Process thumbnails in smaller batches to avoid memory issues
-        let batch_size = 50;
-        for chunk in assets.chunks_mut(batch_size) {
+        // Get the project cache directory (where thumbnails should be stored)
+        let project_cache_dir = self.get_project_cache_dir(project_id)?;
+
+        // Just set the expected thumbnail paths without actually generating them
+        // This makes the scan complete quickly, and thumbnails will be generated separately
+        for asset in assets.iter_mut() {
             if self.cancellation_token.load(Ordering::Relaxed) {
                 return Err(ScanError::Cancelled);
             }
 
-            // Process batch sequentially to manage memory usage
-            for asset in chunk.iter_mut() {
-                let file_path = Path::new(&asset.path);
-                
-                // Generate thumbnail with predictable path
-                let thumbnail_path = format!(".cullrs/thumbnails/{}.jpg", asset.id);
-                
-                // For now, just set the path - actual thumbnail generation would happen here
-                // TODO: Implement proper thumbnail generation
-                asset.thumbnail_path = Some(thumbnail_path);
-
-                let current_count = processed_count.fetch_add(1, Ordering::Relaxed) + 1;
-                let elapsed = start_time.elapsed().as_secs();
-                let estimated_remaining = if current_count > 0 && elapsed > 0 {
-                    let rate = current_count as f64 / elapsed as f64;
-                    let remaining = total_assets - current_count;
-                    Some((remaining as f64 / rate) as u64)
-                } else {
-                    None
-                };
-
-                // Update progress every 25 items
-                if current_count % 25 == 0 {
-                    self.send_progress(ScanProgress {
-                        files_processed: current_count,
-                        total_files: total_assets,
-                        current_file: format!("Generating thumbnail: {}", file_path.file_name().unwrap_or_default().to_string_lossy()),
-                        estimated_time_remaining: estimated_remaining,
-                        phase: ScanPhase::BackgroundThumbnails,
-                        bytes_processed: None,
-                        quick_scan_complete: true,
-                    });
-                }
-            }
-
-            // Small delay between batches
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            // Get the full thumbnail path from the thumbnail service
+            let thumbnail_path = self.thumbnail_service.get_thumbnail_path(&project_cache_dir, &asset.id);
+            
+            // Set the expected thumbnail path (absolute path)
+            asset.thumbnail_path = Some(thumbnail_path.to_string_lossy().to_string());
         }
+
+        // Send completion progress immediately
+        self.send_progress(ScanProgress {
+            files_processed: total_assets,
+            total_files: total_assets,
+            current_file: "Thumbnail paths configured".to_string(),
+            estimated_time_remaining: Some(0),
+            phase: ScanPhase::BackgroundThumbnails,
+            bytes_processed: None,
+            quick_scan_complete: true,
+        });
 
         Ok(())
     }
@@ -491,7 +482,7 @@ impl ScannerService {
                 .par_iter_mut()
                 .map(|asset| {
                     let file_path = Path::new(&asset.path);
-                    
+
                     // Compute content hash
                     if let Ok(hash) = self.hash_service.compute_content_hash(file_path) {
                         asset.hash = Some(hash);
@@ -517,7 +508,10 @@ impl ScannerService {
                         self.send_progress(ScanProgress {
                             files_processed: current_count,
                             total_files: total_assets,
-                            current_file: format!("Computing hashes: {}", file_path.file_name().unwrap_or_default().to_string_lossy()),
+                            current_file: format!(
+                                "Computing hashes: {}",
+                                file_path.file_name().unwrap_or_default().to_string_lossy()
+                            ),
                             estimated_time_remaining: estimated_remaining,
                             phase: ScanPhase::BackgroundHashing,
                             bytes_processed: None,
@@ -752,6 +746,127 @@ impl ScannerService {
     /// Get access to the hash service for external use
     pub fn hash_service(&self) -> &HashService {
         &self.hash_service
+    }
+
+    /// Generate thumbnails for assets in the background (non-blocking)
+    /// This method can be called after the main scan is complete
+    pub async fn generate_thumbnails_background(
+        &self,
+        project_id: &str,
+        asset_ids: Vec<String>,
+        app_handle: Option<tauri::AppHandle>,
+    ) -> Result<(), ScanError> {
+        use crate::database::repositories::AssetRepository;
+
+        if asset_ids.is_empty() {
+            return Ok(());
+        }
+
+        let asset_repo = AssetRepository::new();
+        let project_cache_dir = self.get_project_cache_dir(project_id)?;
+        let total_assets = asset_ids.len();
+        let processed_count = Arc::new(AtomicUsize::new(0));
+        let start_time = std::time::Instant::now();
+
+        // Process thumbnails in parallel batches
+        let batch_size = 20; // Smaller batches for memory efficiency
+        for chunk in asset_ids.chunks(batch_size) {
+            if self.cancellation_token.load(Ordering::Relaxed) {
+                return Err(ScanError::Cancelled);
+            }
+
+            // Load assets from database for this chunk
+            let assets = asset_repo
+                .find_by_ids(&chunk.to_vec())
+                .map_err(|e| ScanError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to load assets: {}", e),
+                )))?;
+
+            // Generate thumbnails for this batch in parallel
+            let results: Result<Vec<_>, ScanError> = assets
+                .into_iter()
+                .map(|asset| {
+                    let file_path = Path::new(&asset.path);
+                    let thumbnail_path = self.thumbnail_service.get_thumbnail_path(&project_cache_dir, &asset.id);
+                    let asset_id = asset.id.clone();
+
+                    // Check if thumbnail already exists and is newer than the original
+                    if thumbnail_path.exists() {
+                        if let Ok(thumb_metadata) = fs::metadata(&thumbnail_path) {
+                            if let Ok(orig_metadata) = fs::metadata(file_path) {
+                                if thumb_metadata.modified().unwrap_or(std::time::UNIX_EPOCH) 
+                                    >= orig_metadata.modified().unwrap_or(std::time::UNIX_EPOCH) {
+                                    // Thumbnail is up to date, skip generation
+                                    return Ok(asset_id);
+                                }
+                            }
+                        }
+                    }
+
+                    // Generate thumbnail asynchronously
+                    tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(async {
+                            match self.thumbnail_service.generate_thumbnail(file_path, &thumbnail_path).await {
+                                Ok(_) => {
+                                    log::debug!("Generated thumbnail for asset {}: {}", asset_id, thumbnail_path.display());
+                                    Ok(asset_id)
+                                }
+                                Err(e) => {
+                                    log::warn!("Failed to generate thumbnail for asset {}: {}", asset_id, e);
+                                    // Return the asset ID anyway, we'll handle the missing thumbnail gracefully
+                                    Ok(asset_id)
+                                }
+                            }
+                        })
+                    })
+                })
+                .collect();
+
+            let _successful_thumbnails = results?;
+
+            // Update progress
+            let current_count = processed_count.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
+            
+            // Emit progress to frontend if app handle is available
+            if let Some(ref handle) = app_handle {
+                let elapsed = start_time.elapsed().as_secs();
+                let estimated_remaining = if current_count > 0 && elapsed > 0 {
+                    let rate = current_count as f64 / elapsed as f64;
+                    let remaining = total_assets - current_count;
+                    Some((remaining as f64 / rate) as u64)
+                } else {
+                    None
+                };
+
+                let progress = ScanProgress {
+                    files_processed: current_count,
+                    total_files: total_assets,
+                    current_file: format!("Generated {} of {} thumbnails", current_count, total_assets),
+                    estimated_time_remaining: estimated_remaining,
+                    phase: ScanPhase::BackgroundThumbnails,
+                    bytes_processed: None,
+                    quick_scan_complete: true,
+                };
+
+                // Use tauri::Emitter trait
+                if let Err(e) = handle.emit("thumbnail-progress", &progress) {
+                    log::warn!("Failed to emit thumbnail progress: {}", e);
+                }
+            }
+
+            // Small delay between batches to avoid overwhelming the system
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+
+        // Emit completion event
+        if let Some(handle) = app_handle {
+            if let Err(e) = handle.emit("thumbnails-complete", project_id) {
+                log::warn!("Failed to emit thumbnails complete event: {}", e);
+            }
+        }
+
+        Ok(())
     }
 
     /// Phase 1: Quick scan with immediate database insertion
