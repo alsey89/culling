@@ -1,7 +1,7 @@
 use crate::core::{
     image::{ImageHash, ImageMetadata},
     project::{Project, ProjectConfig, ScanProgress},
-    scanner::{ScanProgress as EnhancedScanProgress, ScannerService},
+    scanner::{ScanProgress as EnhancedScanProgress, ScannerService, ScanPhase},
 };
 use crate::database::{
     connection::get_connection,
@@ -10,6 +10,7 @@ use crate::database::{
 use chrono::Utc;
 use diesel::prelude::*;
 use serde::Serialize;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
@@ -121,24 +122,30 @@ pub async fn scan_project_enhanced(
         *scan_state_guard = Some(cancellation_token.clone());
     }
 
-    // Spawn task to forward progress to frontend
+    // Spawn task to forward progress to frontend and handle real-time asset insertion
     let app_handle_clone = app_handle.clone();
+    let project_id_clone = project_id.clone();
     let progress_forwarder = tokio::spawn(async move {
         while let Some(progress) = progress_rx.recv().await {
             // Emit progress event to frontend
             let _ = app_handle_clone.emit("scan-progress", &progress);
+
+            // When quick scan is complete, emit event so UI can show assets
+            if progress.quick_scan_complete && progress.phase == ScanPhase::QuickScan {
+                let _ = app_handle_clone.emit("quick-scan-complete", &project_id_clone);
+            }
         }
     });
 
-    // Perform the scan
-    let scan_result = scanner
-        .scan_paths(
-            &project_id,
-            &[PathBuf::from(&db_project.source_path)],
-            &parsed_file_types,
-            &parsed_exclude_patterns,
-        )
-        .await;
+    // Perform the scan with real-time database updates
+    let scan_result = scan_with_realtime_updates(
+        &scanner,
+        &project_id,
+        &[PathBuf::from(&db_project.source_path)],
+        &parsed_file_types,
+        &parsed_exclude_patterns,
+    )
+    .await;
 
     // Clean up scan state
     {
@@ -150,35 +157,9 @@ pub async fn scan_project_enhanced(
     progress_forwarder.abort();
 
     match scan_result {
-        Ok(assets) => {
-            // Save assets to database
-            use crate::database::models::NewAsset;
-            use crate::schema::assets;
-
-            let new_assets: Vec<NewAsset> = assets
-                .iter()
-                .map(|asset| NewAsset {
-                    id: asset.id.clone(),
-                    project_id: asset.project_id.clone(),
-                    path: asset.path.clone(),
-                    thumbnail_path: asset.thumbnail_path.clone(), // Use the thumbnail path set during generation
-                    hash: asset.hash.clone(),
-                    perceptual_hash: asset.perceptual_hash.clone(),
-                    size: asset.size,
-                    width: asset.width,
-                    height: asset.height,
-                    exif_data: asset.exif_data.clone(),
-                    created_at: asset.created_at.clone(),
-                    updated_at: asset.updated_at.clone(),
-                })
-                .collect();
-
-            diesel::insert_into(assets::table)
-                .values(&new_assets)
-                .execute(&mut conn)
-                .map_err(|e| format!("Failed to save assets: {}", e))?;
-
+        Ok(_) => {
             // Update scan status to completed
+            let mut conn = get_connection().map_err(|e| e.to_string())?;
             diesel::update(projects.filter(id.eq(&project_id)))
                 .set(scan_status.eq(String::from(ScanStatus::Completed)))
                 .execute(&mut conn)
@@ -191,6 +172,7 @@ pub async fn scan_project_enhanced(
         }
         Err(crate::core::scanner::ScanError::Cancelled) => {
             // Update scan status to cancelled
+            let mut conn = get_connection().map_err(|e| e.to_string())?;
             diesel::update(projects.filter(id.eq(&project_id)))
                 .set(scan_status.eq(String::from(ScanStatus::Cancelled)))
                 .execute(&mut conn)
@@ -203,18 +185,74 @@ pub async fn scan_project_enhanced(
         }
         Err(e) => {
             // Update scan status to failed
-            let error_message = e.to_string();
+            let mut conn = get_connection().map_err(|e| e.to_string())?;
             diesel::update(projects.filter(id.eq(&project_id)))
-                .set(scan_status.eq(String::from(ScanStatus::Failed(error_message.clone()))))
+                .set(scan_status.eq(String::from(ScanStatus::Failed(e.to_string()))))
                 .execute(&mut conn)
                 .map_err(|e| format!("Failed to update scan status: {}", e))?;
 
             // Emit error event
-            let _ = app_handle.emit("scan-error", &error_message);
+            let _ = app_handle.emit("scan-error", format!("Scan failed: {}", e));
 
-            Err(format!("Scan failed: {}", error_message))
+            Err(format!("Scan failed: {}", e))
         }
     }
+}
+
+/// Enhanced scan function that inserts assets in real-time during the two-phase process
+async fn scan_with_realtime_updates(
+    scanner: &ScannerService,
+    project_id: &str,
+    paths: &[PathBuf],
+    file_types: &[String],
+    exclude_patterns: &[String],
+) -> Result<(), crate::core::scanner::ScanError> {
+    // Use the existing scan_paths method but with enhanced database integration
+    let assets = scanner
+        .scan_paths(project_id, paths, file_types, exclude_patterns)
+        .await?;
+
+    // Insert all assets to database after scanning is complete
+    use crate::database::models::NewAsset;
+    use crate::schema::assets;
+    use diesel::prelude::*;
+
+    let mut conn = get_connection().map_err(|e| {
+        crate::core::scanner::ScanError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("Database connection failed: {}", e),
+        ))
+    })?;
+
+    let new_assets: Vec<NewAsset> = assets
+        .iter()
+        .map(|asset| NewAsset {
+            id: asset.id.clone(),
+            project_id: asset.project_id.clone(),
+            path: asset.path.clone(),
+            thumbnail_path: asset.thumbnail_path.clone(),
+            hash: asset.hash.clone(),
+            perceptual_hash: asset.perceptual_hash.clone(),
+            size: asset.size,
+            width: asset.width,
+            height: asset.height,
+            exif_data: asset.exif_data.clone(),
+            created_at: asset.created_at.clone(),
+            updated_at: asset.updated_at.clone(),
+        })
+        .collect();
+
+    diesel::insert_into(assets::table)
+        .values(&new_assets)
+        .execute(&mut conn)
+        .map_err(|e| {
+            crate::core::scanner::ScanError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Failed to insert assets: {}", e),
+            ))
+        })?;
+
+    Ok(())
 }
 
 #[tauri::command]

@@ -154,22 +154,26 @@ This document defines the **feature scope, priorities, user stories, acceptance 
 **Requirements**
 
 - Create/Open project with: source folder selection, auto-generated project name (editable), automatic output path (Documents/Cullrs/{project-name}), exclude patterns (globs), file types (image defaults: jpg/jpeg/png/heic/tiff/webp/raw families), batch cap (respect SKU).
-- During scan, generate thumbnails for all originals and store them in a hidden subfolder within the output directory (e.g., .thumbnails/).
+- Scanning is split into two phases:
+  1. **Quick Scan:** Rapidly index all eligible files and minimal metadata (e.g., path, size, type), allowing assets to appear in the UI immediately.
+  2. **Background Processing:** Extract full metadata (EXIF, hashes, etc.) and generate thumbnails for all originals in batches, storing them in a hidden subfolder within the output directory (e.g., .thumbnails/).
 - The assets table should hold a path or pattern to the corresponding thumbnail for each asset. If the thumbnail path is strictly predictable (e.g., {output}/.thumbnails/{asset_id}.jpg), explicit DB writes for each thumbnail may be unnecessary.
-- Display progress (files scanned / time remaining estimate).
-- Pause/Resume/Cancel.
+- Real-time progress events are emitted for both phases (files indexed, metadata extracted, thumbnails generated, time remaining estimate) and reflected in the frontend UI.
+- Pause/Resume/Cancel supported for both phases.
 - Project list for quick access to previously created projects.
 
 **Acceptance**
 
 - AC-001-1: Exclude patterns are applied before expensive operations.
 - AC-001-2: Cancel leaves no partial writes beyond index cache.
-- AC-001-3: Large directories (≥250k files) do not freeze UI; progress updates every ≤250ms.
-- AC-001-4: Automatic output folder creation with fallback for inaccessible locations.
-- AC-001-5: Project name auto-fills from source folder name but remains editable.
-- Thumbnails for all scanned images are generated and stored in the hidden .cullrs/thumbnails/ folder inside the project’s output directory.
-- The assets table includes a thumbnail path or pattern, enabling fast lookup and display.
-- If the thumbnail path is deterministic, avoid redundant DB writes for each thumbnail.
+- AC-001-3: Large directories (≥250k files) do not freeze UI; progress updates every ≤250ms for both quick scan and background processing phases.
+- AC-001-4: Assets appear in the UI immediately after quick scan, even if metadata and thumbnails are pending.
+- AC-001-5: Real-time progress events are emitted and reflected in the frontend for both phases (indexing, metadata extraction, thumbnail generation).
+- AC-001-6: Automatic output folder creation with fallback for inaccessible locations.
+- AC-001-7: Project name auto-fills from source folder name but remains editable.
+- AC-001-8: Thumbnails for all scanned images are generated and stored in the hidden .cullrs/thumbnails/ folder inside the project’s output directory.
+- AC-001-9: The assets table includes a thumbnail path or pattern, enabling fast lookup and display.
+- AC-001-10: If the thumbnail path is deterministic, avoid redundant DB writes for each thumbnail.
 
 ### F-002 Exact Duplicate Detection (P0, Free)
 

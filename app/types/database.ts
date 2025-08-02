@@ -104,13 +104,15 @@ export interface ScanProgress {
   current_file: string;
   estimated_time_remaining?: number;
   phase: ScanPhase;
+  bytes_processed?: number;
+  quick_scan_complete: boolean;
 }
 
 export type ScanPhase =
-  | "Discovery"
-  | "Processing"
-  | "ThumbnailGeneration"
-  | "HashingAndExif"
+  | "QuickScan"
+  | "BackgroundMetadata"
+  | "BackgroundThumbnails"
+  | "BackgroundHashing"
   | "Complete";
 
 export interface ThumbnailProgress {
