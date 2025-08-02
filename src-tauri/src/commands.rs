@@ -538,6 +538,42 @@ pub async fn duplicate_project(project_id: String, new_name: String) -> Result<D
     Ok(duplicated_project)
 }
 
+#[tauri::command]
+pub async fn get_project_assets(
+    project_id: String,
+) -> Result<Vec<crate::database::models::Asset>, String> {
+    use crate::database::repositories::AssetRepository;
+
+    let asset_repo = AssetRepository::new();
+    asset_repo
+        .find_by_project_id(&project_id)
+        .map_err(|e| format!("Failed to load assets: {}", e))
+}
+
+#[tauri::command]
+pub async fn get_project_assets_paginated(
+    project_id: String,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<crate::database::models::Asset>, String> {
+    use crate::database::repositories::AssetRepository;
+
+    let asset_repo = AssetRepository::new();
+    asset_repo
+        .find_by_project_id_paginated(&project_id, limit, offset)
+        .map_err(|e| format!("Failed to load assets: {}", e))
+}
+
+#[tauri::command]
+pub async fn get_asset_count(project_id: String) -> Result<i64, String> {
+    use crate::database::repositories::AssetRepository;
+
+    let asset_repo = AssetRepository::new();
+    asset_repo
+        .count_by_project_id(&project_id)
+        .map_err(|e| format!("Failed to count assets: {}", e))
+}
+
 #[derive(Debug, Serialize)]
 pub struct ProjectStats {
     pub total_assets: i64,

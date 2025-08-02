@@ -167,7 +167,12 @@ npm run tauri:icon
 
 - **Formatter**: Prettier
 - **Linter**: ESLint with Vue/TypeScript rules
-- **Component Naming**: PascalCase for component files
+- **Components**:
+  - Naming: PascalCase for component files
+  - **Keep code in pages unless the component is reusable across multiple different places**
+  - Only create components when they will be used in 2+ different locations
+  - Prefer inline code in pages over premature component abstraction
+  - Auto import follows PascalCase, using each word as a folder if the folder exists (example: Project/List/Component.vue can be used in template as <ProjectListComponent />)
 - **Composition API**: Use `<script setup>` syntax
 - **State Management**: Pinia stores with composable pattern
 - **CSS**:

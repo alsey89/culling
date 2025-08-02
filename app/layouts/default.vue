@@ -170,7 +170,7 @@
             </div>
 
             <!-- Photo Grid Area - Slot for content -->
-            <div class="flex-1 p-8 overflow-y-auto bg-background">
+            <div class="flex-1 overflow-y-auto bg-background">
                 <slot />
             </div>
 

@@ -43,6 +43,10 @@ pub fn run() {
             rename_project,
             delete_project,
             duplicate_project,
+            // Asset commands
+            get_project_assets,
+            get_project_assets_paginated,
+            get_asset_count,
             // Image processing commands
             get_image_metadata,
             compute_image_hash,

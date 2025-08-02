@@ -2,16 +2,16 @@
 
 export interface Asset {
   id: string;
-  projectId: string;
+  project_id: string;
   path: string;
   hash?: string;
-  perceptualHash?: string;
+  perceptual_hash?: string;
   size: number;
   width: number;
   height: number;
-  exifData?: ExifData;
-  createdAt: string;
-  updatedAt: string;
+  exif_data?: string; // JSON string from Rust
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ExifData {
@@ -26,13 +26,13 @@ export interface ExifData {
 export interface Project {
   id: string;
   name: string;
-  sourcePath: string;
-  outputPath: string;
-  excludePatterns: string[];
-  fileTypes: string[];
-  scanStatus: ScanStatus;
-  createdAt: string;
-  updatedAt: string;
+  source_path: string;
+  output_path: string;
+  exclude_patterns: string; // JSON string from Rust
+  file_types: string; // JSON string from Rust
+  scan_status: string; // Raw string from Rust
+  created_at: string;
+  updated_at: string;
 }
 
 export type ScanStatus =
@@ -44,22 +44,22 @@ export type ScanStatus =
 
 export interface VariantGroup {
   id: string;
-  projectId: string;
-  groupType: GroupType;
+  project_id: string;
+  group_type: string; // Raw string from Rust
   similarity: number;
-  suggestedKeep?: string;
-  createdAt: string;
+  suggested_keep?: string;
+  created_at: string;
   assets?: Asset[]; // Populated when needed
 }
 
 export type GroupType = "exact" | "similar";
 
 export interface Decision {
-  assetId: string;
-  state: DecisionState;
-  reason: ReasonCode;
+  asset_id: string;
+  state: string; // Raw string from Rust
+  reason: string; // Raw string from Rust
   notes?: string;
-  decidedAt: string;
+  decided_at: string;
 }
 
 export type DecisionState = "keep" | "remove" | "undecided";
@@ -98,20 +98,25 @@ export interface ProjectStats {
 
 // Progress tracking types
 export interface ScanProgress {
-  filesProcessed: number;
-  totalFiles: number;
-  currentFile: string;
-  estimatedTimeRemaining?: number;
+  files_processed: number;
+  total_files: number;
+  current_file: string;
+  estimated_time_remaining?: number;
   phase: ScanPhase;
 }
 
-export type ScanPhase = "scanning" | "thumbnails" | "hashing" | "grouping";
+export type ScanPhase =
+  | "Discovery"
+  | "Processing"
+  | "ThumbnailGeneration"
+  | "HashingAndExif"
+  | "Complete";
 
 export interface ThumbnailProgress {
-  thumbnailsGenerated: number;
-  totalThumbnails: number;
-  currentFile: string;
-  estimatedTimeRemaining?: number;
+  thumbnails_generated: number;
+  total_thumbnails: number;
+  current_file: string;
+  estimated_time_remaining?: number;
 }
 
 export interface CopyProgress {

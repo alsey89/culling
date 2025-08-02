@@ -158,10 +158,10 @@
                                                 {{ project.name }}
                                             </div>
                                             <div class="text-xs text-slate-500 dark:text-slate-400 truncate">
-                                                {{ formatPath(project.sourcePath) }}
+                                                {{ formatPath(project.source_path) }}
                                             </div>
                                             <div class="text-xs text-slate-400 dark:text-slate-500">
-                                                {{ formatDate(project.updatedAt) }}
+                                                {{ formatDate(project.updated_at) }}
                                             </div>
                                         </div>
                                         <Icon name="lucide:chevron-right" class="w-4 h-4 text-slate-400" />
@@ -377,22 +377,27 @@ const formatPath = (path) => {
     return path
 }
 
-const formatDate = (date) => {
-    if (!date) return ''
-    const now = new Date()
-    const diffInDays = Math.floor((now - date) / (1000 * 60 * 60 * 24))
+const formatDate = (dateString) => {
+    if (!dateString) return ''
+    try {
+        const date = new Date(dateString)
+        const now = new Date()
+        const diffInDays = Math.floor((now - date) / (1000 * 60 * 60 * 24))
 
-    if (diffInDays === 0) return 'Today'
-    if (diffInDays === 1) return 'Yesterday'
-    if (diffInDays < 7) return `${diffInDays} days ago`
-    if (diffInDays < 30) return `${Math.floor(diffInDays / 7)} weeks ago`
-    return date.toLocaleDateString()
+        if (diffInDays === 0) return 'Today'
+        if (diffInDays === 1) return 'Yesterday'
+        if (diffInDays < 7) return `${diffInDays} days ago`
+        if (diffInDays < 30) return `${Math.floor(diffInDays / 7)} weeks ago`
+        return date.toLocaleDateString()
+    } catch {
+        return 'Unknown date'
+    }
 }
 
 const openProject = (project) => {
     toast.info(`Opening project: ${project.name}`)
     // Navigate to project workspace with project data
-    router.push(`/project?id=${project.id}`)
+    navigateTo(`/project/${project.id}`)
 }
 
 const selectNewDefaultLocation = async () => {
