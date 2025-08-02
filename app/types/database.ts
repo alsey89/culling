@@ -4,6 +4,7 @@ export interface Asset {
   id: string;
   project_id: string;
   path: string;
+  thumbnail_path?: string;
   hash?: string;
   perceptual_hash?: string;
   size: number;

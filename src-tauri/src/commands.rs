@@ -161,6 +161,7 @@ pub async fn scan_project_enhanced(
                     id: asset.id.clone(),
                     project_id: asset.project_id.clone(),
                     path: asset.path.clone(),
+                    thumbnail_path: asset.thumbnail_path.clone(), // Use the thumbnail path set during generation
                     hash: asset.hash.clone(),
                     perceptual_hash: asset.perceptual_hash.clone(),
                     size: asset.size,
@@ -574,6 +575,83 @@ pub async fn get_asset_count(project_id: String) -> Result<i64, String> {
         .map_err(|e| format!("Failed to count assets: {}", e))
 }
 
+#[tauri::command]
+pub async fn get_thumbnail_path(project_id: String, asset_id: String) -> Result<String, String> {
+    let scanner = ScannerService::new();
+    match scanner.get_thumbnail_path(&project_id, &asset_id) {
+        Ok(path) => {
+            if path.exists() {
+                Ok(path.to_string_lossy().to_string())
+            } else {
+                Err(format!("Thumbnail not found for asset {}", asset_id))
+            }
+        }
+        Err(e) => Err(format!("Failed to get thumbnail path: {}", e)),
+    }
+}
+
+#[tauri::command]
+pub async fn get_thumbnail_data(project_id: String, asset_id: String) -> Result<Vec<u8>, String> {
+    let scanner = ScannerService::new();
+    match scanner.get_thumbnail_path(&project_id, &asset_id) {
+        Ok(path) => {
+            if path.exists() {
+                std::fs::read(&path).map_err(|e| format!("Failed to read thumbnail: {}", e))
+            } else {
+                Err(format!("Thumbnail not found for asset {}", asset_id))
+            }
+        }
+        Err(e) => Err(format!("Failed to get thumbnail path: {}", e)),
+    }
+}
+
+#[tauri::command]
+pub async fn get_project_cache_info(project_id: String) -> Result<ProjectCacheInfo, String> {
+    use crate::schema::projects::dsl::*;
+
+    let mut conn = get_connection().map_err(|e| e.to_string())?;
+
+    let project = projects
+        .filter(id.eq(&project_id))
+        .first::<DbProject>(&mut conn)
+        .map_err(|e| format!("Failed to load project: {}", e))?;
+
+    // Determine cache directory location
+    let base_path = if !project.output_path.is_empty() {
+        project.output_path.clone()
+    } else {
+        project.source_path.clone()
+    };
+
+    let cache_dir = std::path::Path::new(&base_path).join(".cullrs");
+    let thumbnails_dir = cache_dir.join("thumbnails");
+
+    // Count thumbnails if directory exists
+    let thumbnail_count = if thumbnails_dir.exists() {
+        std::fs::read_dir(&thumbnails_dir)
+            .map_err(|e| format!("Failed to read thumbnails directory: {}", e))?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.to_lowercase() == "jpg")
+                    .unwrap_or(false)
+            })
+            .count()
+    } else {
+        0
+    };
+
+    Ok(ProjectCacheInfo {
+        cache_directory: cache_dir.to_string_lossy().to_string(),
+        thumbnails_directory: thumbnails_dir.to_string_lossy().to_string(),
+        thumbnail_count,
+        cache_exists: cache_dir.exists(),
+    })
+}
+
 #[derive(Debug, Serialize)]
 pub struct ProjectStats {
     pub total_assets: i64,
@@ -582,6 +660,14 @@ pub struct ProjectStats {
     pub undecided_count: i64,
     pub duplicate_groups: i64,
     pub similar_groups: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProjectCacheInfo {
+    pub cache_directory: String,
+    pub thumbnails_directory: String,
+    pub thumbnail_count: usize,
+    pub cache_exists: bool,
 }
 #[cfg(test)]
 mod tests {

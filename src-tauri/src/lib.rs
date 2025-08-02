@@ -47,6 +47,10 @@ pub fn run() {
             get_project_assets,
             get_project_assets_paginated,
             get_asset_count,
+            // Thumbnail commands
+            get_thumbnail_path,
+            get_thumbnail_data,
+            get_project_cache_info,
             // Image processing commands
             get_image_metadata,
             compute_image_hash,

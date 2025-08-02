@@ -19,6 +19,7 @@ impl AssetRepository {
         &self,
         project_id: String,
         path: String,
+        thumbnail_path: Option<String>,
         hash: Option<String>,
         perceptual_hash: Option<String>,
         size: i32,
@@ -26,7 +27,6 @@ impl AssetRepository {
         height: i32,
         exif_data: Option<ExifData>,
     ) -> Result<Asset, DatabaseError> {
-        let mut conn = self.get_connection()?;
         let now = Utc::now().to_rfc3339();
         let id = format!("ast_{}", Uuid::new_v4().simple());
 
@@ -39,6 +39,7 @@ impl AssetRepository {
             id: id.clone(),
             project_id,
             path,
+            thumbnail_path,
             hash,
             perceptual_hash,
             size,
@@ -49,6 +50,7 @@ impl AssetRepository {
             updated_at: now.clone(),
         };
 
+        let mut conn = self.get_connection()?;
         diesel::insert_into(assets::table)
             .values(&new_asset)
             .execute(&mut conn)?;
@@ -73,6 +75,7 @@ impl AssetRepository {
 
         assets::table
             .filter(assets::id.eq(id))
+            .select(Asset::as_select())
             .first(&mut conn)
             .map_err(DatabaseError::Query)
     }
@@ -82,6 +85,7 @@ impl AssetRepository {
 
         assets::table
             .filter(assets::id.eq_any(ids))
+            .select(Asset::as_select())
             .load(&mut conn)
             .map_err(DatabaseError::Query)
     }
@@ -91,7 +95,7 @@ impl AssetRepository {
 
         assets::table
             .filter(assets::project_id.eq(project_id))
-            .order(assets::created_at.asc())
+            .select(Asset::as_select())
             .load(&mut conn)
             .map_err(DatabaseError::Query)
     }
@@ -109,6 +113,7 @@ impl AssetRepository {
             .order(assets::created_at.asc())
             .limit(limit)
             .offset(offset)
+            .select(Asset::as_select())
             .load(&mut conn)
             .map_err(DatabaseError::Query)
     }
@@ -118,6 +123,7 @@ impl AssetRepository {
 
         assets::table
             .filter(assets::hash.eq(hash))
+            .select(Asset::as_select())
             .load(&mut conn)
             .map_err(DatabaseError::Query)
     }
@@ -258,6 +264,7 @@ impl AssetRepository {
 
         assets::table
             .filter(assets::path.eq(path))
+            .select(Asset::as_select())
             .first(&mut conn)
             .optional()
             .map_err(DatabaseError::Query)
@@ -318,6 +325,7 @@ mod tests {
             .create(
                 project_id.clone(),
                 "/test/image.jpg".to_string(),
+                None, // thumbnail_path
                 Some("hash123".to_string()),
                 Some("phash456".to_string()),
                 1024000,
@@ -343,6 +351,7 @@ mod tests {
         repo.create(
             project_id.clone(),
             "/test/image1.jpg".to_string(),
+            None, // thumbnail_path
             Some("hash1".to_string()),
             None,
             1024000,
@@ -355,6 +364,7 @@ mod tests {
         repo.create(
             project_id.clone(),
             "/test/image2.jpg".to_string(),
+            None, // thumbnail_path
             Some("hash2".to_string()),
             None,
             2048000,
@@ -377,6 +387,7 @@ mod tests {
         repo.create(
             project_id.clone(),
             "/test/image1.jpg".to_string(),
+            None, // thumbnail_path
             Some("duplicate_hash".to_string()),
             None,
             1024000,
@@ -389,6 +400,7 @@ mod tests {
         repo.create(
             project_id.clone(),
             "/test/image2.jpg".to_string(),
+            None, // thumbnail_path
             Some("duplicate_hash".to_string()),
             None,
             1024000,
@@ -401,6 +413,7 @@ mod tests {
         repo.create(
             project_id.clone(),
             "/test/image3.jpg".to_string(),
+            None, // thumbnail_path
             Some("unique_hash".to_string()),
             None,
             2048000,
@@ -424,6 +437,7 @@ mod tests {
             .create(
                 project_id,
                 "/test/image.jpg".to_string(),
+                None, // thumbnail_path
                 None,
                 None,
                 1024000,
@@ -447,6 +461,7 @@ mod tests {
             repo.create(
                 project_id.clone(),
                 format!("/test/image{}.jpg", i),
+                None, // thumbnail_path
                 Some(format!("hash{}", i)),
                 None,
                 1024000,

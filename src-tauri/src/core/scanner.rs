@@ -346,6 +346,7 @@ impl ScannerService {
             id: asset_id,
             project_id: project_id.to_string(),
             path: file_path.to_string_lossy().to_string(),
+            thumbnail_path: None,  // Will be set during thumbnail generation
             hash: None,            // Will be computed later
             perceptual_hash: None, // Will be computed later
             size: file_size,
@@ -492,6 +493,7 @@ impl ScannerService {
     }
 
     /// Generate thumbnails for all assets in the project with enhanced error handling
+    /// Thumbnails are stored in a .cullrs directory within the project's output path
     pub async fn generate_thumbnails(
         &self,
         assets: &mut [Asset],
@@ -501,8 +503,8 @@ impl ScannerService {
             return Err(ScanError::Cancelled);
         }
 
-        // Get project temp directory
-        let project_temp_dir = self.get_project_temp_dir(project_id)?;
+        // Get project cache directory
+        let project_cache_dir = self.get_project_cache_dir(project_id)?;
 
         // Set up progress forwarding from thumbnail service to scanner progress
         let (thumbnail_tx, mut thumbnail_rx) = mpsc::unbounded_channel::<ThumbnailProgress>();
@@ -536,7 +538,7 @@ impl ScannerService {
 
         // Generate thumbnails using the thumbnail service with error recovery
         let result = thumbnail_service
-            .generate_thumbnails_batch_with_recovery(assets, &project_temp_dir, Some(thumbnail_tx))
+            .generate_thumbnails_batch_with_recovery(assets, &project_cache_dir, Some(thumbnail_tx))
             .await;
 
         // Wait for progress forwarder to finish
@@ -549,15 +551,12 @@ impl ScannerService {
         for asset in assets.iter_mut() {
             let thumbnail_path = self
                 .thumbnail_service
-                .get_thumbnail_path(&project_temp_dir, &asset.id);
+                .get_thumbnail_path(&project_cache_dir, &asset.id);
 
             if thumbnail_path.exists() {
                 successful_thumbnails += 1;
-                // Store relative path from project temp dir for portability
-                if let Ok(_relative_path) = thumbnail_path.strip_prefix(&project_temp_dir) {
-                    // We'll store the full path for now, but this could be optimized
-                    // to store relative paths if needed for project portability
-                }
+                // Store the full thumbnail path
+                asset.thumbnail_path = Some(thumbnail_path.to_string_lossy().to_string());
             } else {
                 failed_thumbnails += 1;
                 log::warn!(
@@ -577,27 +576,53 @@ impl ScannerService {
         result.map_err(ScanError::from)
     }
 
-    /// Get the temporary directory for a project
-    fn get_project_temp_dir(&self, project_id: &str) -> Result<PathBuf, ScanError> {
-        // Use system temp directory with project-specific subdirectory
-        let temp_dir = std::env::temp_dir()
-            .join("cullrs")
-            .join("projects")
-            .join(project_id);
+    /// Get the project cache directory (for thumbnails and other cached data)
+    fn get_project_cache_dir(&self, project_id: &str) -> Result<PathBuf, ScanError> {
+        use crate::database::connection::get_connection;
+        use crate::schema::projects::dsl::*;
+        use diesel::prelude::*;
+
+        // Get project from database to access output_path
+        let mut conn = get_connection().map_err(|e| {
+            ScanError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Database connection failed: {}", e),
+            ))
+        })?;
+
+        let project = projects
+            .filter(id.eq(project_id))
+            .first::<crate::database::models::Project>(&mut conn)
+            .map_err(|e| {
+                ScanError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Project not found: {}", e),
+                ))
+            })?;
+
+        // Use output_path as primary location, fallback to source_path
+        let base_path = if !project.output_path.is_empty() {
+            PathBuf::from(&project.output_path)
+        } else {
+            PathBuf::from(&project.source_path)
+        };
+
+        // Create .cullrs hidden directory for cache data
+        let cache_dir = base_path.join(".cullrs");
 
         // Create directory if it doesn't exist
-        if !temp_dir.exists() {
-            fs::create_dir_all(&temp_dir).map_err(|e| ScanError::Io(e))?;
+        if !cache_dir.exists() {
+            fs::create_dir_all(&cache_dir).map_err(|e| ScanError::Io(e))?;
         }
 
-        Ok(temp_dir)
+        Ok(cache_dir)
     }
 
     /// Clean up thumbnails for a project
     pub async fn cleanup_project_thumbnails(&self, project_id: &str) -> Result<(), ScanError> {
-        let project_temp_dir = self.get_project_temp_dir(project_id)?;
+        let project_cache_dir = self.get_project_cache_dir(project_id)?;
         self.thumbnail_service
-            .cleanup_thumbnails(&project_temp_dir)
+            .cleanup_thumbnails(&project_cache_dir)
             .await
             .map_err(|e| ScanError::Io(e))
     }
@@ -608,10 +633,10 @@ impl ScannerService {
         project_id: &str,
         asset_id: &str,
     ) -> Result<PathBuf, ScanError> {
-        let project_temp_dir = self.get_project_temp_dir(project_id)?;
+        let project_cache_dir = self.get_project_cache_dir(project_id)?;
         Ok(self
             .thumbnail_service
-            .get_thumbnail_path(&project_temp_dir, asset_id))
+            .get_thumbnail_path(&project_cache_dir, asset_id))
     }
 
     /// Compute content hash for a single asset (used for re-processing)
@@ -1096,6 +1121,7 @@ mod tests {
                 id: "test_asset".to_string(),
                 project_id: "test_project".to_string(),
                 path: test_file.to_string_lossy().to_string(),
+                thumbnail_path: None,
                 hash: None,
                 perceptual_hash: None,
                 size: 1000,
@@ -1134,6 +1160,7 @@ mod tests {
                 id: "test_asset".to_string(),
                 project_id: "test_project".to_string(),
                 path: test_file.to_string_lossy().to_string(),
+                thumbnail_path: None,
                 hash: Some(hash),
                 perceptual_hash: None,
                 size: 1000,

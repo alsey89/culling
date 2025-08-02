@@ -75,11 +75,16 @@
                 <h3 class="text-lg font-semibold text-gray-900 mb-2">No Images Found</h3>
                 <p class="text-gray-600 mb-4">
                     No images were found in the selected directory. Make sure the folder contains supported image
-                    formats.
+                    formats (JPG, PNG, HEIC, TIFF, WebP, CR3, NEF, ARW, DNG).
                 </p>
-                <Button @click="$router.push('/projects')" variant="outline">
-                    Back to Projects
-                </Button>
+                <div class="flex gap-3 justify-center">
+                    <Button @click="startScan" :disabled="isScanning" variant="default">
+                        {{ isScanning ? 'Scanning...' : 'Scan Folder Again' }}
+                    </Button>
+                    <Button @click="$router.push('/projects')" variant="outline">
+                        Back to Projects
+                    </Button>
+                </div>
             </div>
 
             <!-- Scan not started state -->
@@ -156,12 +161,6 @@
                         <div class="aspect-square bg-gray-100 rounded-t-lg overflow-hidden">
                             <img :src="getThumbnailUrl(asset.id)" :alt="getFileName(asset.path)"
                                 class="w-full h-full object-cover" @error="handleImageError" loading="lazy" />
-
-                            <!-- Loading overlay for thumbnails -->
-                            <div v-if="!imageLoaded[asset.id]"
-                                class="absolute inset-0 bg-gray-100 flex items-center justify-center">
-                                <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-gray-400"></div>
-                            </div>
                         </div>
 
                         <!-- Asset metadata -->
@@ -250,6 +249,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { convertFileSrc } from '@tauri-apps/api/core'
 import { Button } from '@/components/ui/button'
 import { useTauri } from '@/composables/useTauri'
 import type { Asset, Project, ScanProgress, ExifData } from '@/types/database'
@@ -269,7 +269,6 @@ const {
     onScanProgress,
     onScanComplete,
     onScanError,
-    getThumbnailPath,
     formatFileSize,
     getFileName,
 } = useTauri()
@@ -286,7 +285,6 @@ const error = ref<string | null>(null)
 const scanProgress = ref<ScanProgress | null>(null)
 const totalAssets = ref(0)
 const gridSize = ref<'small' | 'medium' | 'large'>('medium')
-const imageLoaded = ref<Record<string, boolean>>({})
 
 // Pagination state
 const currentPage = ref(0)
@@ -356,11 +354,6 @@ const loadAssets = async (append = false) => {
 
         // Get total count
         totalAssets.value = await getAssetCount(projectId.value)
-
-        // Initialize image loaded state
-        newAssets.forEach(asset => {
-            imageLoaded.value[asset.id] = false
-        })
     } catch (err) {
         console.error('Failed to load assets:', err)
         error.value = err instanceof Error ? err.message : 'Failed to load assets'
@@ -452,15 +445,19 @@ const nextImage = () => {
 
 // Utility methods
 const getThumbnailUrl = (assetId: string): string => {
-    // For now, return a placeholder. In a real implementation, this would
-    // serve the thumbnail from the temp folder via a backend endpoint
-    return getThumbnailPath(assetId)
+    const asset = assets.value.find(a => a.id === assetId)
+    if (!asset) return ''
+
+    // Use thumbnail_path if available, otherwise fallback to original path
+    const imagePath = asset.thumbnail_path || asset.path
+    return convertFileSrc(imagePath)
 }
 
 const getOriginalImageUrl = (assetId: string): string => {
-    // For now, return the same as thumbnail. In a real implementation,
-    // this would serve the original image file
-    return `/api/assets/${assetId}/original`
+    const asset = assets.value.find(a => a.id === assetId)
+    if (!asset) return ''
+
+    return convertFileSrc(asset.path)
 }
 
 const handleImageError = (event: Event) => {

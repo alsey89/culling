@@ -61,11 +61,19 @@ export const useTauri = () => {
     });
   };
 
-  // Utility functions
-  const getThumbnailPath = (assetId: string): string => {
-    // This will be the path to the thumbnail in the temp folder
-    // For now, we'll use a placeholder URL that the backend will serve
-    return `/api/thumbnails/${assetId}`;
+  // Thumbnail commands
+  const getThumbnailPath = async (
+    projectId: string,
+    assetId: string
+  ): Promise<string> => {
+    return await invoke("get_thumbnail_path", { projectId, assetId });
+  };
+
+  const getThumbnailData = async (
+    projectId: string,
+    assetId: string
+  ): Promise<Uint8Array> => {
+    return await invoke("get_thumbnail_data", { projectId, assetId });
   };
 
   const formatFileSize = (bytes: number): string => {
@@ -98,8 +106,11 @@ export const useTauri = () => {
     onScanComplete,
     onScanError,
 
-    // Utility functions
+    // Thumbnail commands
     getThumbnailPath,
+    getThumbnailData,
+
+    // Utility functions
     formatFileSize,
     getFileName,
   };

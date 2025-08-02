@@ -20,6 +20,7 @@ diesel::table! {
         exif_data -> Nullable<Text>,
         created_at -> Text,
         updated_at -> Text,
+        thumbnail_path -> Nullable<Text>,
     }
 }
 
@@ -62,6 +63,7 @@ diesel::joinable!(asset_groups -> assets (asset_id));
 diesel::joinable!(asset_groups -> variant_groups (group_id));
 diesel::joinable!(assets -> projects (project_id));
 diesel::joinable!(decisions -> assets (asset_id));
+diesel::joinable!(variant_groups -> assets (suggested_keep));
 diesel::joinable!(variant_groups -> projects (project_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
