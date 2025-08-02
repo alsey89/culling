@@ -154,6 +154,8 @@ This document defines the **feature scope, priorities, user stories, acceptance 
 **Requirements**
 
 - Create/Open project with: source folder selection, auto-generated project name (editable), automatic output path (Documents/Cullrs/{project-name}), exclude patterns (globs), file types (image defaults: jpg/jpeg/png/heic/tiff/webp/raw families), batch cap (respect SKU).
+- During scan, generate thumbnails for all originals and store them in a hidden subfolder within the output directory (e.g., .thumbnails/).
+- The assets table should hold a path or pattern to the corresponding thumbnail for each asset. If the thumbnail path is strictly predictable (e.g., {output}/.thumbnails/{asset_id}.jpg), explicit DB writes for each thumbnail may be unnecessary.
 - Display progress (files scanned / time remaining estimate).
 - Pause/Resume/Cancel.
 - Project list for quick access to previously created projects.
@@ -165,6 +167,9 @@ This document defines the **feature scope, priorities, user stories, acceptance 
 - AC-001-3: Large directories (≥250k files) do not freeze UI; progress updates every ≤250ms.
 - AC-001-4: Automatic output folder creation with fallback for inaccessible locations.
 - AC-001-5: Project name auto-fills from source folder name but remains editable.
+- Thumbnails for all scanned images are generated and stored in the hidden .cullrs/thumbnails/ folder inside the project’s output directory.
+- The assets table includes a thumbnail path or pattern, enabling fast lookup and display.
+- If the thumbnail path is deterministic, avoid redundant DB writes for each thumbnail.
 
 ### F-002 Exact Duplicate Detection (P0, Free)
 
