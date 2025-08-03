@@ -344,6 +344,8 @@ const {
     onScanComplete,
     onScanError,
     onQuickScanComplete,
+    onThumbnailProgress,
+    onThumbnailsComplete,
     formatFileSize,
     getFileName,
 } = useTauri()
@@ -384,6 +386,8 @@ let unlistenProgress: (() => void) | null = null
 let unlistenComplete: (() => void) | null = null
 let unlistenError: (() => void) | null = null
 let unlistenQuickScanComplete: (() => void) | null = null
+let unlistenThumbnailProgress: (() => void) | null = null
+let unlistenThumbnailsComplete: (() => void) | null = null
 
 // Methods
 const loadProjectData = async () => {
@@ -687,6 +691,33 @@ onMounted(async () => {
         }
     })
 
+    // Set up thumbnail progress listeners
+    unlistenThumbnailProgress = await onThumbnailProgress(async (progress) => {
+        console.log('Thumbnail progress:', progress)
+        scanProgress.value = progress
+
+        // Refresh assets periodically to show new thumbnails
+        if (progress.files_processed % 10 === 0) {
+            try {
+                await refreshAssets()
+            } catch (err) {
+                console.error('Failed to refresh assets during thumbnail generation:', err)
+            }
+        }
+    })
+
+    unlistenThumbnailsComplete = await onThumbnailsComplete(async (completedProjectId) => {
+        if (completedProjectId === projectId.value) {
+            console.log('Thumbnails complete for project:', completedProjectId)
+            // Final refresh to show all completed thumbnails
+            try {
+                await refreshAssets()
+            } catch (err) {
+                console.error('Failed to refresh assets after thumbnails complete:', err)
+            }
+        }
+    })
+
     // Add keyboard event listener
     document.addEventListener('keydown', handleKeydown)
 
@@ -700,6 +731,8 @@ onUnmounted(() => {
     if (unlistenComplete) unlistenComplete()
     if (unlistenError) unlistenError()
     if (unlistenQuickScanComplete) unlistenQuickScanComplete()
+    if (unlistenThumbnailProgress) unlistenThumbnailProgress()
+    if (unlistenThumbnailsComplete) unlistenThumbnailsComplete()
 
     document.removeEventListener('keydown', handleKeydown)
 })

@@ -63,6 +63,18 @@ export const useTauri = () => {
     });
   };
 
+  const onThumbnailProgress = (callback: (progress: ScanProgress) => void) => {
+    return listen<ScanProgress>("thumbnail-progress", (event) => {
+      callback(event.payload);
+    });
+  };
+
+  const onThumbnailsComplete = (callback: (projectId: string) => void) => {
+    return listen<string>("thumbnails-complete", (event) => {
+      callback(event.payload);
+    });
+  };
+
   // Thumbnail commands
   const getThumbnailPath = async (
     projectId: string,
@@ -107,6 +119,8 @@ export const useTauri = () => {
     onScanComplete,
     onScanError,
     onQuickScanComplete,
+    onThumbnailProgress,
+    onThumbnailsComplete,
 
     // Thumbnail commands
     getThumbnailPath,
