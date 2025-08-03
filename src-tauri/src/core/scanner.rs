@@ -302,7 +302,7 @@ impl ScannerService {
         project_id: &str,
         assets: &mut [Asset],
     ) -> Result<(), ScanError> {
-        let total_assets = assets.len();
+        let _total_assets = assets.len();
 
         // Step 1: Extract metadata (dimensions, EXIF) in batches
         self.background_extract_metadata(assets).await?;
@@ -435,8 +435,10 @@ impl ScannerService {
             }
 
             // Get the full thumbnail path from the thumbnail service
-            let thumbnail_path = self.thumbnail_service.get_thumbnail_path(&project_cache_dir, &asset.id);
-            
+            let thumbnail_path = self
+                .thumbnail_service
+                .get_thumbnail_path(&project_cache_dir, &asset.id);
+
             // Set the expected thumbnail path (absolute path)
             asset.thumbnail_path = Some(thumbnail_path.to_string_lossy().to_string());
         }
@@ -630,10 +632,6 @@ impl ScannerService {
         }
     }
 
-    pub fn get_supported_formats(&self) -> &HashSet<String> {
-        &self.supported_formats
-    }
-
     /// Get the project cache directory (for thumbnails and other cached data)
     fn get_project_cache_dir(&self, project_id: &str) -> Result<PathBuf, ScanError> {
         use crate::database::connection::get_connection;
@@ -676,15 +674,6 @@ impl ScannerService {
         Ok(cache_dir)
     }
 
-    /// Clean up thumbnails for a project
-    pub async fn cleanup_project_thumbnails(&self, project_id: &str) -> Result<(), ScanError> {
-        let project_cache_dir = self.get_project_cache_dir(project_id)?;
-        self.thumbnail_service
-            .cleanup_thumbnails(&project_cache_dir)
-            .await
-            .map_err(|e| ScanError::Io(e))
-    }
-
     /// Get thumbnail path for an asset
     pub fn get_thumbnail_path(
         &self,
@@ -706,29 +695,6 @@ impl ScannerService {
                 Ok(())
             }
             Err(e) => Err(ScanError::Hash(e)),
-        }
-    }
-
-    /// Extract EXIF data for a single asset (used for re-processing)
-    pub fn extract_asset_exif(&self, asset: &mut Asset) -> Result<(), ScanError> {
-        let file_path = Path::new(&asset.path);
-        match self.exif_service.extract_exif(file_path) {
-            Ok(Some(exif_data)) => match serde_json::to_string(&exif_data) {
-                Ok(json_str) => {
-                    asset.exif_data = Some(json_str);
-                    Ok(())
-                }
-                Err(e) => {
-                    log::warn!("Failed to serialize EXIF data for {}: {}", asset.path, e);
-                    asset.exif_data = None;
-                    Ok(())
-                }
-            },
-            Ok(None) => {
-                asset.exif_data = None;
-                Ok(())
-            }
-            Err(e) => Err(ScanError::Exif(e)),
         }
     }
 
@@ -776,27 +742,30 @@ impl ScannerService {
             }
 
             // Load assets from database for this chunk
-            let assets = asset_repo
-                .find_by_ids(&chunk.to_vec())
-                .map_err(|e| ScanError::Io(std::io::Error::new(
+            let assets = asset_repo.find_by_ids(&chunk.to_vec()).map_err(|e| {
+                ScanError::Io(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     format!("Failed to load assets: {}", e),
-                )))?;
+                ))
+            })?;
 
             // Generate thumbnails for this batch in parallel
             let results: Result<Vec<_>, ScanError> = assets
                 .into_iter()
                 .map(|asset| {
                     let file_path = Path::new(&asset.path);
-                    let thumbnail_path = self.thumbnail_service.get_thumbnail_path(&project_cache_dir, &asset.id);
+                    let thumbnail_path = self
+                        .thumbnail_service
+                        .get_thumbnail_path(&project_cache_dir, &asset.id);
                     let asset_id = asset.id.clone();
 
                     // Check if thumbnail already exists and is newer than the original
                     if thumbnail_path.exists() {
                         if let Ok(thumb_metadata) = fs::metadata(&thumbnail_path) {
                             if let Ok(orig_metadata) = fs::metadata(file_path) {
-                                if thumb_metadata.modified().unwrap_or(std::time::UNIX_EPOCH) 
-                                    >= orig_metadata.modified().unwrap_or(std::time::UNIX_EPOCH) {
+                                if thumb_metadata.modified().unwrap_or(std::time::UNIX_EPOCH)
+                                    >= orig_metadata.modified().unwrap_or(std::time::UNIX_EPOCH)
+                                {
                                     // Thumbnail is up to date, skip generation
                                     return Ok(asset_id);
                                 }
@@ -807,13 +776,25 @@ impl ScannerService {
                     // Generate thumbnail asynchronously
                     tokio::task::block_in_place(|| {
                         tokio::runtime::Handle::current().block_on(async {
-                            match self.thumbnail_service.generate_thumbnail(file_path, &thumbnail_path).await {
+                            match self
+                                .thumbnail_service
+                                .generate_thumbnail(file_path, &thumbnail_path)
+                                .await
+                            {
                                 Ok(_) => {
-                                    log::debug!("Generated thumbnail for asset {}: {}", asset_id, thumbnail_path.display());
+                                    log::debug!(
+                                        "Generated thumbnail for asset {}: {}",
+                                        asset_id,
+                                        thumbnail_path.display()
+                                    );
                                     Ok(asset_id)
                                 }
                                 Err(e) => {
-                                    log::warn!("Failed to generate thumbnail for asset {}: {}", asset_id, e);
+                                    log::warn!(
+                                        "Failed to generate thumbnail for asset {}: {}",
+                                        asset_id,
+                                        e
+                                    );
                                     // Return the asset ID anyway, we'll handle the missing thumbnail gracefully
                                     Ok(asset_id)
                                 }
@@ -826,8 +807,9 @@ impl ScannerService {
             let _successful_thumbnails = results?;
 
             // Update progress
-            let current_count = processed_count.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
-            
+            let current_count =
+                processed_count.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
+
             // Emit progress to frontend if app handle is available
             if let Some(ref handle) = app_handle {
                 let elapsed = start_time.elapsed().as_secs();
@@ -842,7 +824,10 @@ impl ScannerService {
                 let progress = ScanProgress {
                     files_processed: current_count,
                     total_files: total_assets,
-                    current_file: format!("Generated {} of {} thumbnails", current_count, total_assets),
+                    current_file: format!(
+                        "Generated {} of {} thumbnails",
+                        current_count, total_assets
+                    ),
                     estimated_time_remaining: estimated_remaining,
                     phase: ScanPhase::BackgroundThumbnails,
                     bytes_processed: None,
@@ -867,150 +852,6 @@ impl ScannerService {
         }
 
         Ok(())
-    }
-
-    /// Phase 1: Quick scan with immediate database insertion
-    pub async fn quick_scan_with_database_insert(
-        &self,
-        project_id: &str,
-        paths: &[PathBuf],
-        file_types: &[String],
-        exclude_patterns: &[String],
-    ) -> Result<Vec<String>, ScanError> {
-        use crate::database::connection::get_connection;
-        use crate::database::models::NewAsset;
-        use crate::schema::assets;
-        use diesel::prelude::*;
-
-        // Perform file discovery and quick indexing
-        let assets = self.quick_scan_phase(project_id, paths, file_types, exclude_patterns)?;
-
-        // Insert assets to database immediately after quick scan
-        let mut conn = get_connection().map_err(|e| {
-            ScanError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Database connection failed: {}", e),
-            ))
-        })?;
-
-        let new_assets: Vec<NewAsset> = assets
-            .iter()
-            .map(|asset| NewAsset {
-                id: asset.id.clone(),
-                project_id: asset.project_id.clone(),
-                path: asset.path.clone(),
-                thumbnail_path: asset.thumbnail_path.clone(),
-                hash: asset.hash.clone(),
-                perceptual_hash: asset.perceptual_hash.clone(),
-                size: asset.size,
-                width: asset.width,
-                height: asset.height,
-                exif_data: asset.exif_data.clone(),
-                created_at: asset.created_at.clone(),
-                updated_at: asset.updated_at.clone(),
-            })
-            .collect();
-
-        diesel::insert_into(assets::table)
-            .values(&new_assets)
-            .execute(&mut conn)
-            .map_err(|e| {
-                ScanError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("Failed to insert assets: {}", e),
-                ))
-            })?;
-
-        // Return asset IDs for background processing
-        Ok(assets.iter().map(|asset| asset.id.clone()).collect())
-    }
-
-    /// Quick scan phase - discover files and create minimal assets
-    fn quick_scan_phase(
-        &self,
-        project_id: &str,
-        paths: &[PathBuf],
-        file_types: &[String],
-        exclude_patterns: &[String],
-    ) -> Result<Vec<Asset>, ScanError> {
-        // Check for cancellation at the start
-        if self.cancellation_token.load(Ordering::Relaxed) {
-            return Err(ScanError::Cancelled);
-        }
-
-        // Validate paths
-        for path in paths {
-            if !path.exists() {
-                return Err(ScanError::InvalidPath {
-                    path: path.to_string_lossy().to_string(),
-                });
-            }
-
-            if !path.is_dir() {
-                return Err(ScanError::InvalidPath {
-                    path: format!("{} is not a directory", path.to_string_lossy()),
-                });
-            }
-        }
-
-        // Compile exclude patterns
-        let exclude_patterns: Result<Vec<Pattern>, _> = exclude_patterns
-            .iter()
-            .map(|pattern| Pattern::new(pattern))
-            .collect();
-
-        let exclude_patterns = exclude_patterns.map_err(|e| {
-            ScanError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                e.to_string(),
-            ))
-        })?;
-
-        // Filter file types to only supported ones
-        let file_types: HashSet<String> = file_types
-            .iter()
-            .map(|ext| ext.to_lowercase())
-            .filter(|ext| self.supported_formats.contains(ext))
-            .collect();
-
-        // Phase 1: Quick Scan - Rapidly index all eligible files
-        self.send_progress(ScanProgress {
-            files_processed: 0,
-            total_files: 0,
-            current_file: "Starting quick scan...".to_string(),
-            estimated_time_remaining: None,
-            phase: ScanPhase::QuickScan,
-            bytes_processed: Some(0),
-            quick_scan_complete: false,
-        });
-
-        let discovered_files = self.discover_files(paths, &file_types, &exclude_patterns)?;
-
-        if self.cancellation_token.load(Ordering::Relaxed) {
-            return Err(ScanError::Cancelled);
-        }
-
-        let total_files = discovered_files.len();
-
-        // Perform quick indexing - create assets with minimal metadata
-        let assets = self.quick_index_files(project_id, discovered_files)?;
-
-        if self.cancellation_token.load(Ordering::Relaxed) {
-            return Err(ScanError::Cancelled);
-        }
-
-        // Mark quick scan as complete
-        self.send_progress(ScanProgress {
-            files_processed: total_files,
-            total_files,
-            current_file: "Quick scan complete - assets available in UI".to_string(),
-            estimated_time_remaining: Some(0),
-            phase: ScanPhase::QuickScan,
-            bytes_processed: Some(0),
-            quick_scan_complete: true,
-        });
-
-        Ok(assets)
     }
 }
 
