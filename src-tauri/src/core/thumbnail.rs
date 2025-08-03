@@ -1,14 +1,8 @@
-use crate::database::models::Asset;
 use image::{imageops::FilterType, DynamicImage, GenericImageView};
-use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use thiserror::Error;
-use tokio::sync::mpsc;
 
 #[derive(Debug, Error)]
 pub enum ThumbnailError {
@@ -23,28 +17,31 @@ pub enum ThumbnailError {
 
     #[error("Unsupported format: {format}")]
     UnsupportedFormat { format: String },
-
-    #[error("Operation cancelled")]
-    Cancelled,
-
-    #[error("Project directory not found: {path}")]
-    ProjectDirectoryNotFound { path: String },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ThumbnailProgress {
-    pub thumbnails_generated: usize,
-    pub total_thumbnails: usize,
     pub current_file: String,
-    pub estimated_time_remaining: Option<u64>, // seconds
+    pub completed_count: usize,
+    pub total_count: usize,
+    pub current_phase: ThumbnailPhase,
+    pub error_message: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub enum ThumbnailPhase {
+    Loading,
+    Processing,
+    Saving,
+    Complete,
+    Error,
+}
+
+pub type ProgressCallback = Box<dyn Fn(ThumbnailProgress) + Send + Sync>;
 
 pub struct ThumbnailService {
     thumbnail_size: u32,
     quality: u8,
-    progress_sender: Option<mpsc::UnboundedSender<ThumbnailProgress>>,
-    pub cancellation_token: Arc<AtomicBool>,
-    cache: Arc<Mutex<HashMap<String, PathBuf>>>, // asset_id -> thumbnail_path
 }
 
 impl ThumbnailService {
@@ -52,26 +49,7 @@ impl ThumbnailService {
         Self {
             thumbnail_size: 512,
             quality: 85,
-            progress_sender: None,
-            cancellation_token: Arc::new(AtomicBool::new(false)),
-            cache: Arc::new(Mutex::new(HashMap::new())),
         }
-    }
-
-    pub fn with_progress_sender(
-        mut self,
-        sender: mpsc::UnboundedSender<ThumbnailProgress>,
-    ) -> Self {
-        self.progress_sender = Some(sender);
-        self
-    }
-
-    pub fn get_cancellation_token(&self) -> Arc<AtomicBool> {
-        self.cancellation_token.clone()
-    }
-
-    pub fn cancel_generation(&self) {
-        self.cancellation_token.store(true, Ordering::Relaxed);
     }
 
     /// Generate a single thumbnail from an original image file
@@ -80,382 +58,117 @@ impl ThumbnailService {
         original_path: &Path,
         thumbnail_path: &Path,
     ) -> Result<(), ThumbnailError> {
-        if self.cancellation_token.load(Ordering::Relaxed) {
-            return Err(ThumbnailError::Cancelled);
-        }
-
-        // Validate input path
-        if !original_path.exists() {
-            return Err(ThumbnailError::InvalidPath {
-                path: original_path.to_string_lossy().to_string(),
-            });
-        }
-
-        // Create thumbnail directory if it doesn't exist
-        if let Some(parent) = thumbnail_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        // Load and process the image
-        let img = self.load_image(original_path)?;
-        let thumbnail = self.resize_image(img, self.thumbnail_size)?;
-
-        // Save thumbnail with JPEG format for consistent size and quality
-        self.save_thumbnail(&thumbnail, thumbnail_path)?;
-
-        Ok(())
+        self.generate_thumbnail_with_progress(original_path, thumbnail_path, None, 0, 1)
+            .await
     }
 
-    /// Generate thumbnails for multiple assets in parallel
-    pub async fn generate_thumbnails_batch(
-        &self,
-        assets: &[Asset],
-        project_temp_dir: &Path,
-        progress_sender: Option<mpsc::UnboundedSender<ThumbnailProgress>>,
-    ) -> Result<(), ThumbnailError> {
-        if self.cancellation_token.load(Ordering::Relaxed) {
-            return Err(ThumbnailError::Cancelled);
-        }
-
-        // Ensure project temp directory and thumbnails subdirectory exist
-        if !project_temp_dir.exists() {
-            fs::create_dir_all(project_temp_dir)?;
-        }
-
-        let thumbnails_dir = project_temp_dir.join("thumbnails");
-        if !thumbnails_dir.exists() {
-            fs::create_dir_all(&thumbnails_dir)?;
-        }
-
-        let total_assets = assets.len();
-        let processed_count = Arc::new(AtomicUsize::new(0));
-        let start_time = std::time::Instant::now();
-        let cache = self.cache.clone();
-
-        // Send initial progress
-        if let Some(sender) = &progress_sender {
-            let _ = sender.send(ThumbnailProgress {
-                thumbnails_generated: 0,
-                total_thumbnails: total_assets,
-                current_file: "Starting thumbnail generation...".to_string(),
-                estimated_time_remaining: None,
-            });
-        }
-
-        // Process assets in parallel using rayon
-        let results: Result<Vec<_>, ThumbnailError> = assets
-            .par_iter()
-            .map(|asset| {
-                if self.cancellation_token.load(Ordering::Relaxed) {
-                    return Err(ThumbnailError::Cancelled);
-                }
-
-                let original_path = Path::new(&asset.path);
-                let thumbnail_path = self.get_thumbnail_path(project_temp_dir, &asset.id);
-
-                // Skip if thumbnail already exists and is newer than original
-                if self.is_thumbnail_valid(&thumbnail_path, original_path)? {
-                    // Update cache
-                    {
-                        let mut cache_guard = cache.lock().unwrap();
-                        cache_guard.insert(asset.id.clone(), thumbnail_path.clone());
-                    }
-
-                    // Update progress
-                    let current_count = processed_count.fetch_add(1, Ordering::Relaxed) + 1;
-                    self.send_progress_update(
-                        current_count,
-                        total_assets,
-                        &asset.path,
-                        start_time,
-                        &progress_sender,
-                    );
-
-                    return Ok(());
-                }
-
-                // Generate thumbnail
-                let img = self.load_image(original_path)?;
-                let thumbnail = self.resize_image(img, self.thumbnail_size)?;
-                self.save_thumbnail(&thumbnail, &thumbnail_path)?;
-
-                // Update cache
-                {
-                    let mut cache_guard = cache.lock().unwrap();
-                    cache_guard.insert(asset.id.clone(), thumbnail_path);
-                }
-
-                // Update progress
-                let current_count = processed_count.fetch_add(1, Ordering::Relaxed) + 1;
-                self.send_progress_update(
-                    current_count,
-                    total_assets,
-                    &asset.path,
-                    start_time,
-                    &progress_sender,
-                );
-
-                Ok(())
-            })
-            .collect();
-
-        match results {
-            Ok(_) => {
-                // Send completion progress
-                if let Some(sender) = &progress_sender {
-                    let _ = sender.send(ThumbnailProgress {
-                        thumbnails_generated: total_assets,
-                        total_thumbnails: total_assets,
-                        current_file: "Thumbnail generation complete".to_string(),
-                        estimated_time_remaining: Some(0),
-                    });
-                }
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Generate thumbnails with error recovery for corrupted files
-    pub async fn generate_thumbnails_batch_with_recovery(
-        &self,
-        assets: &[Asset],
-        project_temp_dir: &Path,
-        progress_sender: Option<mpsc::UnboundedSender<ThumbnailProgress>>,
-    ) -> Result<(), ThumbnailError> {
-        if self.cancellation_token.load(Ordering::Relaxed) {
-            return Err(ThumbnailError::Cancelled);
-        }
-
-        // Ensure project temp directory and thumbnails subdirectory exist
-        if !project_temp_dir.exists() {
-            fs::create_dir_all(project_temp_dir)?;
-        }
-
-        let thumbnails_dir = project_temp_dir.join("thumbnails");
-        if !thumbnails_dir.exists() {
-            fs::create_dir_all(&thumbnails_dir)?;
-        }
-
-        let total_assets = assets.len();
-        let processed_count = Arc::new(AtomicUsize::new(0));
-        let error_count = Arc::new(AtomicUsize::new(0));
-        let start_time = std::time::Instant::now();
-        let cache = self.cache.clone();
-
-        // Send initial progress
-        if let Some(sender) = &progress_sender {
-            let _ = sender.send(ThumbnailProgress {
-                thumbnails_generated: 0,
-                total_thumbnails: total_assets,
-                current_file: "Starting thumbnail generation...".to_string(),
-                estimated_time_remaining: None,
-            });
-        }
-
-        // Process assets in parallel using rayon with error recovery
-        let _results: Vec<_> = assets
-            .par_iter()
-            .map(|asset| {
-                if self.cancellation_token.load(Ordering::Relaxed) {
-                    return Err(ThumbnailError::Cancelled);
-                }
-
-                let original_path = Path::new(&asset.path);
-                let thumbnail_path = self.get_thumbnail_path(project_temp_dir, &asset.id);
-
-                // Skip if thumbnail already exists and is newer than original
-                match self.is_thumbnail_valid(&thumbnail_path, original_path) {
-                    Ok(true) => {
-                        // Update cache
-                        {
-                            let mut cache_guard = cache.lock().unwrap();
-                            cache_guard.insert(asset.id.clone(), thumbnail_path.clone());
-                        }
-
-                        // Update progress
-                        let current_count = processed_count.fetch_add(1, Ordering::Relaxed) + 1;
-                        self.send_progress_update(
-                            current_count,
-                            total_assets,
-                            &asset.path,
-                            start_time,
-                            &progress_sender,
-                        );
-
-                        return Ok(());
-                    }
-                    Ok(false) => {
-                        // Need to generate thumbnail
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "Error checking thumbnail validity for {}: {}",
-                            asset.path,
-                            e
-                        );
-                        // Continue with generation attempt
-                    }
-                }
-
-                // Attempt to generate thumbnail with error recovery
-                let generation_result =
-                    self.generate_thumbnail_with_recovery(original_path, &thumbnail_path);
-
-                match generation_result {
-                    Ok(()) => {
-                        // Update cache on success
-                        {
-                            let mut cache_guard = cache.lock().unwrap();
-                            cache_guard.insert(asset.id.clone(), thumbnail_path);
-                        }
-                    }
-                    Err(e) => {
-                        error_count.fetch_add(1, Ordering::Relaxed);
-                        log::warn!("Failed to generate thumbnail for {}: {}", asset.path, e);
-                        // Continue processing other files instead of failing completely
-                    }
-                }
-
-                // Update progress regardless of success/failure
-                let current_count = processed_count.fetch_add(1, Ordering::Relaxed) + 1;
-                self.send_progress_update(
-                    current_count,
-                    total_assets,
-                    &asset.path,
-                    start_time,
-                    &progress_sender,
-                );
-
-                Ok(())
-            })
-            .collect();
-
-        // Check if we were cancelled
-        if self.cancellation_token.load(Ordering::Relaxed) {
-            return Err(ThumbnailError::Cancelled);
-        }
-
-        // Count errors but don't fail the entire operation
-        let total_errors = error_count.load(Ordering::Relaxed);
-        let successful = total_assets - total_errors;
-
-        // Send completion progress
-        if let Some(sender) = &progress_sender {
-            let completion_message = if total_errors > 0 {
-                format!(
-                    "Thumbnail generation complete: {} successful, {} failed",
-                    successful, total_errors
-                )
-            } else {
-                "Thumbnail generation complete".to_string()
-            };
-
-            let _ = sender.send(ThumbnailProgress {
-                thumbnails_generated: total_assets,
-                total_thumbnails: total_assets,
-                current_file: completion_message,
-                estimated_time_remaining: Some(0),
-            });
-        }
-
-        log::info!(
-            "Thumbnail generation completed: {} successful, {} failed out of {} total",
-            successful,
-            total_errors,
-            total_assets
-        );
-
-        Ok(())
-    }
-
-    /// Generate a single thumbnail with error recovery
-    fn generate_thumbnail_with_recovery(
+    /// Generate a single thumbnail with progress reporting
+    pub async fn generate_thumbnail_with_progress(
         &self,
         original_path: &Path,
         thumbnail_path: &Path,
+        progress_callback: Option<&ProgressCallback>,
+        current_index: usize,
+        total_count: usize,
     ) -> Result<(), ThumbnailError> {
+        let file_name = original_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+
+        // Helper function to safely call progress callback
+        let report_progress = |phase: ThumbnailPhase, error_message: Option<String>| {
+            if let Some(callback) = progress_callback {
+                let progress = ThumbnailProgress {
+                    current_file: file_name.clone(),
+                    completed_count: if matches!(phase, ThumbnailPhase::Complete) {
+                        current_index + 1
+                    } else {
+                        current_index
+                    },
+                    total_count,
+                    current_phase: phase,
+                    error_message,
+                };
+
+                // Safely call callback, log errors but don't fail thumbnail generation
+                if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    callback(progress);
+                })) {
+                    log::warn!("Progress callback panicked: {:?}", e);
+                }
+            }
+        };
+
         // Validate input path
         if !original_path.exists() {
-            return Err(ThumbnailError::InvalidPath {
+            let error = ThumbnailError::InvalidPath {
                 path: original_path.to_string_lossy().to_string(),
-            });
+            };
+            report_progress(
+                ThumbnailPhase::Error,
+                Some(format!("File not found: {}", original_path.display())),
+            );
+            return Err(error);
         }
 
         // Create thumbnail directory if it doesn't exist
         if let Some(parent) = thumbnail_path.parent() {
-            fs::create_dir_all(parent)?;
+            if let Err(e) = fs::create_dir_all(parent) {
+                report_progress(
+                    ThumbnailPhase::Error,
+                    Some(format!("Failed to create directory: {}", e)),
+                );
+                return Err(ThumbnailError::Io(e));
+            }
         }
 
-        // Try to load and process the image with multiple fallback strategies
-        let img = match self.load_image_with_fallback(original_path) {
+        // Report loading phase
+        report_progress(ThumbnailPhase::Loading, None);
+
+        // Load and process the image
+        let img = match self.load_image(original_path) {
             Ok(img) => img,
             Err(e) => {
-                log::warn!("Failed to load image {}: {}", original_path.display(), e);
+                report_progress(
+                    ThumbnailPhase::Error,
+                    Some(format!("Failed to load image: {}", e)),
+                );
                 return Err(e);
             }
         };
 
-        // Resize the image
-        let thumbnail = self.resize_image(img, self.thumbnail_size)?;
+        // Report processing phase
+        report_progress(ThumbnailPhase::Processing, None);
 
-        // Save thumbnail with error handling
-        match self.save_thumbnail(&thumbnail, thumbnail_path) {
-            Ok(()) => Ok(()),
+        let thumbnail = match self.resize_image(img, self.thumbnail_size) {
+            Ok(thumbnail) => thumbnail,
             Err(e) => {
-                log::warn!(
-                    "Failed to save thumbnail to {}: {}",
-                    thumbnail_path.display(),
-                    e
+                report_progress(
+                    ThumbnailPhase::Error,
+                    Some(format!("Failed to resize image: {}", e)),
                 );
-                // Try to clean up partial file
-                if thumbnail_path.exists() {
-                    let _ = fs::remove_file(thumbnail_path);
-                }
+                return Err(e);
+            }
+        };
+
+        // Report saving phase
+        report_progress(ThumbnailPhase::Saving, None);
+
+        // Save thumbnail with JPEG format for consistent size and quality
+        match self.save_thumbnail(&thumbnail, thumbnail_path) {
+            Ok(()) => {
+                report_progress(ThumbnailPhase::Complete, None);
+                Ok(())
+            }
+            Err(e) => {
+                report_progress(
+                    ThumbnailPhase::Error,
+                    Some(format!("Failed to save thumbnail: {}", e)),
+                );
                 Err(e)
             }
-        }
-    }
-
-    /// Load image with multiple fallback strategies for corrupted files
-    fn load_image_with_fallback(&self, path: &Path) -> Result<DynamicImage, ThumbnailError> {
-        // First attempt: normal image loading
-        match image::open(path) {
-            Ok(img) => return Ok(img),
-            Err(e) => {
-                log::debug!("Primary image load failed for {}: {}", path.display(), e);
-            }
-        }
-
-        // Second attempt: try to load with specific decoders
-        if let Some(ext) = path.extension() {
-            let ext_str = ext.to_string_lossy().to_lowercase();
-
-            // Try format-specific loading for common problematic formats
-            match ext_str.as_str() {
-                "heic" | "heif" => {
-                    // HEIC files might need special handling
-                    log::debug!("Attempting HEIC-specific loading for {}", path.display());
-                    // For now, fall through to generic error
-                }
-                "cr3" | "nef" | "arw" | "dng" => {
-                    // RAW files might need special handling
-                    log::debug!("RAW file detected: {}", path.display());
-                    // For now, fall through to generic error
-                }
-                _ => {}
-            }
-        }
-
-        // If all attempts fail, return appropriate error
-        if let Some(ext) = path.extension() {
-            Err(ThumbnailError::UnsupportedFormat {
-                format: ext.to_string_lossy().to_string(),
-            })
-        } else {
-            Err(ThumbnailError::Image(image::ImageError::Unsupported(
-                image::error::UnsupportedError::from(image::error::ImageFormatHint::Unknown),
-            )))
         }
     }
 
@@ -464,84 +177,6 @@ impl ThumbnailService {
         project_temp_dir
             .join("thumbnails")
             .join(format!("{}.jpg", asset_id))
-    }
-
-    /// Get thumbnail path from cache if available
-    pub fn get_cached_thumbnail_path(&self, asset_id: &str) -> Option<PathBuf> {
-        let cache = self.cache.lock().unwrap();
-        cache.get(asset_id).cloned()
-    }
-
-    /// Check if a thumbnail exists and is valid (newer than original)
-    pub fn is_thumbnail_valid(
-        &self,
-        thumbnail_path: &Path,
-        original_path: &Path,
-    ) -> Result<bool, ThumbnailError> {
-        if !thumbnail_path.exists() {
-            return Ok(false);
-        }
-
-        // Check if thumbnail is newer than original
-        let thumbnail_modified = fs::metadata(thumbnail_path)?.modified()?;
-        let original_modified = fs::metadata(original_path)?.modified()?;
-
-        Ok(thumbnail_modified >= original_modified)
-    }
-
-    /// Clean up all thumbnails for a project
-    pub async fn cleanup_thumbnails(&self, project_temp_dir: &Path) -> Result<(), std::io::Error> {
-        let thumbnails_dir = project_temp_dir.join("thumbnails");
-
-        if thumbnails_dir.exists() {
-            fs::remove_dir_all(&thumbnails_dir)?;
-        }
-
-        // Clear cache
-        {
-            let mut cache = self.cache.lock().unwrap();
-            cache.clear();
-        }
-
-        Ok(())
-    }
-
-    /// Clean up thumbnails for specific assets
-    pub async fn cleanup_asset_thumbnails(
-        &self,
-        project_temp_dir: &Path,
-        asset_ids: &[String],
-    ) -> Result<(), std::io::Error> {
-        let mut cache = self.cache.lock().unwrap();
-
-        for asset_id in asset_ids {
-            let thumbnail_path = self.get_thumbnail_path(project_temp_dir, asset_id);
-
-            if thumbnail_path.exists() {
-                fs::remove_file(&thumbnail_path)?;
-            }
-
-            cache.remove(asset_id);
-        }
-
-        Ok(())
-    }
-
-    /// Get cache statistics
-    pub fn get_cache_stats(&self) -> (usize, usize) {
-        let cache = self.cache.lock().unwrap();
-        let cached_count = cache.len();
-
-        // Count how many cached thumbnails actually exist on disk
-        let valid_count = cache.values().filter(|path| path.exists()).count();
-
-        (cached_count, valid_count)
-    }
-
-    /// Clear invalid entries from cache
-    pub fn cleanup_cache(&self) {
-        let mut cache = self.cache.lock().unwrap();
-        cache.retain(|_, path| path.exists());
     }
 
     // Private helper methods
@@ -595,33 +230,6 @@ impl ThumbnailService {
 
         Ok(())
     }
-
-    fn send_progress_update(
-        &self,
-        current: usize,
-        total: usize,
-        current_file: &str,
-        start_time: std::time::Instant,
-        progress_sender: &Option<mpsc::UnboundedSender<ThumbnailProgress>>,
-    ) {
-        if let Some(sender) = progress_sender {
-            let elapsed = start_time.elapsed().as_secs();
-            let estimated_remaining = if current > 0 && elapsed > 0 {
-                let rate = current as f64 / elapsed as f64;
-                let remaining_files = total - current;
-                Some((remaining_files as f64 / rate) as u64)
-            } else {
-                None
-            };
-
-            let _ = sender.send(ThumbnailProgress {
-                thumbnails_generated: current,
-                total_thumbnails: total,
-                current_file: current_file.to_string(),
-                estimated_time_remaining: estimated_remaining,
-            });
-        }
-    }
 }
 
 impl Default for ThumbnailService {
@@ -633,25 +241,7 @@ impl Default for ThumbnailService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::models::Asset;
     use tempfile::TempDir;
-
-    fn create_test_asset(id: &str, path: &str) -> Asset {
-        Asset {
-            id: id.to_string(),
-            project_id: "test_project".to_string(),
-            path: path.to_string(),
-            thumbnail_path: None,
-            hash: None,
-            perceptual_hash: None,
-            size: 1000,
-            width: 1920,
-            height: 1080,
-            exif_data: None,
-            created_at: chrono::Utc::now().to_rfc3339(),
-            updated_at: chrono::Utc::now().to_rfc3339(),
-        }
-    }
 
     fn create_test_image(
         path: &Path,
@@ -709,130 +299,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_batch_thumbnail_generation() {
-        let service = ThumbnailService::new();
-        let temp_dir = TempDir::new().unwrap();
-        let project_temp_dir = temp_dir.path().join("project");
-
-        // Create test images and assets
-        let mut assets = Vec::new();
-        for i in 0..3 {
-            let original_path = temp_dir.path().join(format!("test_{}.jpg", i));
-            create_test_image(&original_path, 1920, 1080).unwrap();
-
-            let asset = create_test_asset(&format!("ast_{}", i), &original_path.to_string_lossy());
-            assets.push(asset);
-        }
-
-        // Generate thumbnails
-        let result = service
-            .generate_thumbnails_batch(&assets, &project_temp_dir, None)
-            .await;
-        if let Err(e) = &result {
-            println!("Error generating thumbnails: {:?}", e);
-        }
-        assert!(result.is_ok());
-
-        // Verify all thumbnails exist
-        for asset in &assets {
-            let thumbnail_path = service.get_thumbnail_path(&project_temp_dir, &asset.id);
-            assert!(thumbnail_path.exists());
-        }
-
-        // Verify cache is populated
-        let (cached_count, valid_count) = service.get_cache_stats();
-        assert_eq!(cached_count, 3);
-        assert_eq!(valid_count, 3);
-    }
-
-    #[tokio::test]
-    async fn test_thumbnail_validation() {
-        let service = ThumbnailService::new();
-        let temp_dir = TempDir::new().unwrap();
-
-        // Create original and thumbnail files
-        let original_path = temp_dir.path().join("original.jpg");
-        let thumbnail_path = temp_dir.path().join("thumbnail.jpg");
-
-        create_test_image(&original_path, 1920, 1080).unwrap();
-        create_test_image(&thumbnail_path, 512, 512).unwrap();
-
-        // Thumbnail should be valid (both exist)
-        let is_valid = service
-            .is_thumbnail_valid(&thumbnail_path, &original_path)
-            .unwrap();
-        assert!(is_valid);
-
-        // Non-existent thumbnail should be invalid
-        let missing_thumbnail = temp_dir.path().join("missing.jpg");
-        let is_valid = service
-            .is_thumbnail_valid(&missing_thumbnail, &original_path)
-            .unwrap();
-        assert!(!is_valid);
-    }
-
-    #[tokio::test]
-    async fn test_thumbnail_cleanup() {
-        let service = ThumbnailService::new();
-        let temp_dir = TempDir::new().unwrap();
-        let project_temp_dir = temp_dir.path().join("project");
-
-        // Create test asset and generate thumbnail
-        let original_path = temp_dir.path().join("test.jpg");
-        create_test_image(&original_path, 1920, 1080).unwrap();
-
-        let asset = create_test_asset("ast_123", &original_path.to_string_lossy());
-        let result = service
-            .generate_thumbnails_batch(&[asset], &project_temp_dir, None)
-            .await;
-        assert!(result.is_ok());
-
-        // Verify thumbnail exists
-        let thumbnail_path = service.get_thumbnail_path(&project_temp_dir, "ast_123");
-        assert!(thumbnail_path.exists());
-
-        // Clean up thumbnails
-        let result = service.cleanup_thumbnails(&project_temp_dir).await;
-        if let Err(e) = &result {
-            println!("Error cleaning up thumbnails: {:?}", e);
-        }
-        assert!(result.is_ok());
-
-        // Verify thumbnail is removed
-        assert!(!thumbnail_path.exists());
-
-        // Verify cache is cleared
-        let (cached_count, _) = service.get_cache_stats();
-        assert_eq!(cached_count, 0);
-    }
-
-    #[tokio::test]
-    async fn test_cancellation() {
-        let service = ThumbnailService::new();
-        let temp_dir = TempDir::new().unwrap();
-        let project_temp_dir = temp_dir.path().join("project");
-
-        // Create many test assets
-        let mut assets = Vec::new();
-        for i in 0..10 {
-            let original_path = temp_dir.path().join(format!("test_{}.jpg", i));
-            create_test_image(&original_path, 1920, 1080).unwrap();
-
-            let asset = create_test_asset(&format!("ast_{}", i), &original_path.to_string_lossy());
-            assets.push(asset);
-        }
-
-        // Cancel before starting
-        service.cancel_generation();
-
-        // Try to generate thumbnails
-        let result = service
-            .generate_thumbnails_batch(&assets, &project_temp_dir, None)
-            .await;
-        assert!(matches!(result, Err(ThumbnailError::Cancelled)));
-    }
-
-    #[tokio::test]
     async fn test_aspect_ratio_preservation() {
         let service = ThumbnailService::new();
         let temp_dir = TempDir::new().unwrap();
@@ -866,5 +332,138 @@ mod tests {
         let (t_width, t_height) = tall_img.dimensions();
         assert_eq!(t_height, 512); // Height should be 512 for portrait
         assert!(t_width < 512); // Width should be proportionally smaller
+    }
+
+    #[tokio::test]
+    async fn test_progress_reporting() {
+        use std::sync::{Arc, Mutex};
+
+        let service = ThumbnailService::new();
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a test image
+        let original_path = temp_dir.path().join("test.jpg");
+        create_test_image(&original_path, 1920, 1080).unwrap();
+
+        let thumbnail_path = temp_dir.path().join("thumbnail.jpg");
+
+        // Track progress updates
+        let progress_updates = Arc::new(Mutex::new(Vec::new()));
+        let progress_updates_clone = progress_updates.clone();
+
+        let callback: ProgressCallback = Box::new(move |progress| {
+            progress_updates_clone.lock().unwrap().push(progress);
+        });
+
+        // Generate thumbnail with progress reporting
+        let result = service
+            .generate_thumbnail_with_progress(
+                &original_path,
+                &thumbnail_path,
+                Some(&callback),
+                0,
+                1,
+            )
+            .await;
+
+        assert!(result.is_ok());
+        assert!(thumbnail_path.exists());
+
+        // Verify progress updates were received
+        let updates = progress_updates.lock().unwrap();
+        assert!(!updates.is_empty());
+
+        // Should have at least Loading, Processing, Saving, Complete phases
+        let phases: Vec<_> = updates.iter().map(|p| &p.current_phase).collect();
+        assert!(phases.contains(&&ThumbnailPhase::Loading));
+        assert!(phases.contains(&&ThumbnailPhase::Processing));
+        assert!(phases.contains(&&ThumbnailPhase::Saving));
+        assert!(phases.contains(&&ThumbnailPhase::Complete));
+
+        // Verify final progress shows completion
+        let final_progress = updates.last().unwrap();
+        assert!(matches!(
+            final_progress.current_phase,
+            ThumbnailPhase::Complete
+        ));
+        assert_eq!(final_progress.completed_count, 1);
+        assert_eq!(final_progress.total_count, 1);
+        assert!(final_progress.error_message.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_progress_error_handling() {
+        use std::sync::{Arc, Mutex};
+
+        let service = ThumbnailService::new();
+        let temp_dir = TempDir::new().unwrap();
+
+        // Use non-existent file to trigger error
+        let original_path = temp_dir.path().join("nonexistent.jpg");
+        let thumbnail_path = temp_dir.path().join("thumbnail.jpg");
+
+        // Track progress updates
+        let progress_updates = Arc::new(Mutex::new(Vec::new()));
+        let progress_updates_clone = progress_updates.clone();
+
+        let callback: ProgressCallback = Box::new(move |progress| {
+            progress_updates_clone.lock().unwrap().push(progress);
+        });
+
+        // Generate thumbnail with progress reporting (should fail)
+        let result = service
+            .generate_thumbnail_with_progress(
+                &original_path,
+                &thumbnail_path,
+                Some(&callback),
+                0,
+                1,
+            )
+            .await;
+
+        assert!(result.is_err());
+
+        // Verify error was reported via progress
+        let updates = progress_updates.lock().unwrap();
+        assert!(!updates.is_empty());
+
+        let final_progress = updates.last().unwrap();
+        assert!(matches!(
+            final_progress.current_phase,
+            ThumbnailPhase::Error
+        ));
+        assert!(final_progress.error_message.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_callback_error_handling() {
+        let service = ThumbnailService::new();
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a test image
+        let original_path = temp_dir.path().join("test.jpg");
+        create_test_image(&original_path, 1920, 1080).unwrap();
+
+        let thumbnail_path = temp_dir.path().join("thumbnail.jpg");
+
+        // Create a callback that panics
+        let callback: ProgressCallback = Box::new(move |_progress| {
+            panic!("Test panic in callback");
+        });
+
+        // Generate thumbnail with panicking callback - should still succeed
+        let result = service
+            .generate_thumbnail_with_progress(
+                &original_path,
+                &thumbnail_path,
+                Some(&callback),
+                0,
+                1,
+            )
+            .await;
+
+        // Thumbnail generation should succeed despite callback panic
+        assert!(result.is_ok());
+        assert!(thumbnail_path.exists());
     }
 }
